@@ -227,7 +227,7 @@ wheels = [
 
 [[package]]
 name = "embodiment"
-version = "0.24.1"
+version = "0.24.2"
 source = { editable = "." }
 dependencies = [
     { name = "coherence-cli" },

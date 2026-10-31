@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.2] - 2026-10-31
+
+### Changed
+
+- The operator confirmed the 0.24.0 cycle's validation records (o1-o27, e1-e50, b1-b7) and lapses l1-l5; deviation d8 records that posting agentculture/culture#506 (t8) was the operator's go-ahead. The delivery summary says so.
+
 ## [0.24.1] - 2026-10-31
 
 ### Added
