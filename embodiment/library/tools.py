@@ -115,6 +115,11 @@ CODES = frozenset({CODE_BAD_ARGUMENTS, CODE_EMBED_FAILED})
 
 #: Fixed host text: a search with no hit above the threshold.
 NO_MATCHES = "No library passage matched."
+#: Fixed host text after a dated search that found no item on that day: the newest day the
+#: library does hold (of that kind), so "the latest newspaper" can be answered (t19 live,
+#: 2026-10-31: asked for today's paper, Gwen fell back to Oct 11-17 search hits while the
+#: library held 2026-10-30). The date comes from the catalog, never from the model.
+NEWEST_DAY_NOTE = " The newest {what} in the library is dated {day}; search with that date."
 #: Fixed host text: no citable passage at that item id and anchor.
 NO_PASSAGE = "No citable library passage at that item_id and chunk_sha."
 #: Fixed host text after the fence: how to cite.
@@ -494,6 +499,23 @@ class _RetrieveTools:
         except Exception:  # noqa: BLE001  # no catalog: the citation has no date
             return {}
 
+    def _newest_day(self, kind: Optional[str]) -> Optional[str]:
+        """The latest item day in the catalog (of *kind* when given), or None. Never raises."""
+        try:
+            days = [
+                item_day(m) for m in (self._catalog() or ()) if kind is None or item_kind(m) == kind
+            ]
+        except Exception:  # noqa: BLE001  # no catalog: no hint, the plain no-match stands
+            return None
+        days = [d for d in days if isinstance(d, str) and _date_arg(d) is not None]
+        return max(days) if days else None
+
+    def _no_day_matches(self, kind: Optional[str]) -> str:
+        newest = self._newest_day(kind)
+        if newest is None:
+            return NO_MATCHES
+        return NO_MATCHES + NEWEST_DAY_NOTE.format(what=kind or "item", day=newest)
+
     def _day_ids(self, day: str, kind: Optional[str]) -> list:
         keep = _where(day, kind)
         return [m.get("id") for m in (self._catalog() or ()) if keep is None or keep(m)]
@@ -510,7 +532,7 @@ class _RetrieveTools:
             if day is not None:
                 item_ids = self._day_ids(day, wanted_kind)
                 if not item_ids:
-                    return NO_MATCHES
+                    return self._no_day_matches(wanted_kind)
             passages = self._retrieve.retrieve(text, bounded, wanted_kind, item_ids)
         except LibraryError as exc:
             return COULD_NOT_SEARCH.format(code=getattr(exc, "code", "library_unavailable"))

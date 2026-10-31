@@ -271,8 +271,22 @@ class TestRetrieveTools:
     def test_a_day_without_items_makes_no_retrieve_call(self):
         fake = _FakeRetrieve([_passage()])
         search, _, _ = _rtools(fake)
-        assert search.fn(query="x", date="2026-01-01") == lt.NO_MATCHES
+        out = search.fn(query="x", date="2026-01-01")
+        assert out.startswith(lt.NO_MATCHES)
         assert fake.calls == []
+
+    def test_a_dated_miss_names_the_newest_day_of_that_kind(self):
+        """t19 live, 2026-10-31: 'the latest newspaper' searched today's date, found none,
+        and fell back to older hits; the miss now names the newest issue the library has."""
+        search, _, _ = _rtools(_FakeRetrieve([_passage()]))
+        out = search.fn(query="news", date="2026-10-31", kind="newspaper")
+        assert out == lt.NO_MATCHES + lt.NEWEST_DAY_NOTE.format(what="newspaper", day="2026-10-24")
+
+    def test_a_dated_miss_with_no_catalog_is_the_plain_no_match(self):
+        search, _ = lt.build_retrieve_tools(
+            _FakeRetrieve([_passage()]), lambda: [], lambda _id: _DOC, lt.CitationCollector()
+        )
+        assert search.fn(query="news", date="2026-10-31") == lt.NO_MATCHES
 
     @pytest.mark.parametrize("code", ["library_unavailable", "rag_unavailable", "library_timeout"])
     def test_a_library_error_is_fixed_fault_text_with_its_code(self, code):
