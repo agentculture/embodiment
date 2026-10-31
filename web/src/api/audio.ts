@@ -9,6 +9,7 @@
 // and is omitted when empty (public Host).
 
 import { parseSources, type ChatSource } from "./chat";
+import { settingsHeaders, type ConversationSettings } from "./models";
 
 export interface AudioClientOptions {
   basePath?: string;
@@ -77,10 +78,11 @@ export async function postClip(
   conversation?: string,
   origin?: ClipOrigin,
   clientAtMs?: number,
+  settings: ConversationSettings = {},
 ): Promise<ClipOutcome> {
   if (clip.size === 0) return { ok: false, code: "empty-clip", status: 0 };
   const fetchFn = options.fetchFn ?? fetch;
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { ...settingsHeaders(settings) };
   if (clip.type) headers["Content-Type"] = clip.type;
   // Continuing an earlier conversation (deviation d5): the daemon answers in it.
   if (conversation) headers["X-Conversation"] = conversation;

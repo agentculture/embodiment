@@ -13,6 +13,7 @@ import {
   type ChatClientOptions,
   type ChatSource,
 } from "../api/chat";
+import type { ConversationSettings } from "../api/models";
 import { splitCitations, stripCitations } from "../api/citations";
 import { kindInfo } from "../api/kinds";
 import { AudioControls, SpeakButton, type ClipReply } from "./AudioControls";
@@ -42,7 +43,20 @@ export interface ChatProps {
   onAnswer?: (question: string, sources: ChatSource[]) => void;
   /** Start reading a cited library item aloud on this device (embodiment#107). */
   onReadAloud?: (itemId: string) => void;
+  /** Persona, model (a role name) and language chosen for this conversation; sent with every turn. */
+  settings?: ConversationSettings;
+  /** The settings row under the dock. `unavailable` names the role that could not answer, else null. */
+  meta?: (state: ChatMetaState) => ReactNode;
 }
+
+export interface ChatMetaState {
+  unavailable: string | null;
+  /** Ask the last question again (with the settings as they are now). */
+  retry: () => void;
+}
+
+/** The chat code the daemon answers with when the chosen reply model is not ready. */
+export const MODEL_UNAVAILABLE = "app-text-model-unavailable";
 
 /** The library item an answer can offer to read aloud: its first cited library source. */
 export function readableSource(sources: ChatSource[]): ChatSource | null {
@@ -278,12 +292,17 @@ export function Chat({
   conversation,
   initialTurns,
   onReadAloud,
+  settings,
+  meta,
 }: ChatProps) {
   const [draft, setDraft] = useState("");
   const [messages, setMessages] = useState<Message[]>(() =>
     (initialTurns ?? []).map((t, i) => ({ key: `h-${i}`, role: t.role, text: t.text, sources: [] })),
   );
   const [degraded, setDegraded] = useState<string | null>(null);
+  // The role a model-unavailable refusal named; the Model control is amber only while it is still chosen.
+  const [unavailableRole, setUnavailableRole] = useState<string | null>(null);
+  const lastQuestion = useRef("");
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState<string | null>(null);
   const baselineSeq = useRef<number | null>(null);
@@ -320,13 +339,15 @@ export function Chat({
     const text = raw.trim();
     if (!text || busy) return;
     setDraft("");
+    lastQuestion.current = text;
     setBusy(true);
     setPending(text);
     baselineSeq.current = replyEvents.reduce((mx, e) => Math.max(mx, e.seq), 0);
     setMessages((m) => [...m, { key: `u-${m.length}`, role: "user", text, sources: [] }]);
-    const outcome = await sendChat(text, secret, clientOptions, conversation);
+    const outcome = await sendChat(text, secret, clientOptions, conversation, settings);
     if (outcome.ok) {
       setDegraded(null);
+      setUnavailableRole(null);
       if (outcome.value.turnSerial !== null) typedSerials.current.add(outcome.value.turnSerial);
       onAnswer?.(text, outcome.value.sources);
       setMessages((m) => [
@@ -342,6 +363,9 @@ export function Chat({
     } else {
       // Recorded, visible degradation (C3): a fixed code, never the response body.
       setDegraded(outcome.code);
+      setUnavailableRole(
+        outcome.code === MODEL_UNAVAILABLE ? outcome.role || settings?.model || "" : null,
+      );
     }
     setPending(null);
     setBusy(false);
@@ -354,6 +378,7 @@ export function Chat({
 
   function onClipReply({ transcript, reply, turnSerial, sources }: ClipReply) {
     setDegraded(null);
+    setUnavailableRole(null);
     if (baselineSeq.current === null) {
       baselineSeq.current = replyEvents.reduce((mx, e) => Math.max(mx, e.seq), 0);
     }
@@ -367,6 +392,11 @@ export function Chat({
   }
 
   const empty = messages.length === 0;
+  // Unavailable only while the refused role is still the chosen one (a switch clears it at once).
+  const unavailable =
+    degraded === MODEL_UNAVAILABLE && unavailableRole !== null && (unavailableRole === (settings?.model ?? "") || !settings?.model)
+      ? unavailableRole || "the reply model"
+      : null;
 
   return (
     <div className="chat" data-empty={empty ? "true" : undefined}>
@@ -416,7 +446,14 @@ export function Chat({
       <div className="dock-wrap">
         {degraded && (
           <p className="chat__degraded" role="alert">
-            Gwen could not answer ({degraded}). Try again in a moment.
+            {degraded === MODEL_UNAVAILABLE ? (
+              <>
+                <b dir="auto">{unavailableRole || "The reply model"}</b> isn't available right now. Nothing else
+                answered. Pick another model below, or try again.
+              </>
+            ) : (
+              <>Gwen could not answer ({degraded}). Try again in a moment.</>
+            )}
           </p>
         )}
         <form className="dock-line" aria-label="composer" onSubmit={submit}>
@@ -426,6 +463,7 @@ export function Chat({
             clientOptions={clientOptions}
             live={live}
             conversation={conversation}
+            settings={settings}
           >
             <label className="sr-only" htmlFor="ask-box">
               Question
@@ -453,6 +491,12 @@ export function Chat({
             </button>
           </AudioControls>
         </form>
+        {meta?.({
+          unavailable,
+          retry: () => {
+            if (lastQuestion.current) void ask(lastQuestion.current);
+          },
+        })}
       </div>
     </div>
   );

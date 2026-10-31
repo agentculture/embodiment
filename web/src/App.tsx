@@ -18,6 +18,10 @@ import { ConnectionStatus } from "./components/ConnectionStatus";
 import { VoiceControls } from "./components/VoiceControls";
 import { Transcript } from "./components/Transcript";
 import { Chat } from "./components/Chat";
+import { DockMeta } from "./components/DockMeta";
+import { PersonasView } from "./components/PersonasView";
+import { fetchModels, type ConversationSettings, type ModelsInfo } from "./api/models";
+import { listPersonas, type Persona } from "./api/personas";
 import { LibraryHome } from "./components/LibraryHome";
 import { LibraryPane } from "./components/LibraryPane";
 import { Reader, type ReaderHandle } from "./components/Reader";
@@ -65,13 +69,14 @@ const DEFAULT_EVENTS_URL = "/api/events";
 /** Milliseconds before asking for an empty or failed library again. */
 const LIBRARY_RETRY_MS = 10_000;
 
-type View = "ask" | "library" | "todos" | "stats";
+type View = "ask" | "library" | "todos" | "stats" | "personas";
 
 const VIEWS: { id: View; label: string }[] = [
   { id: "ask", label: "Ask" },
   { id: "library", label: "Library" },
   { id: "todos", label: "To-dos" },
   { id: "stats", label: "Stats" },
+  { id: "personas", label: "Personas" },
 ];
 
 /** The view a location hash names; anything else (or none) is Ask. */
@@ -178,6 +183,38 @@ export default function App({
   // string when attached and JSON null when not.
   const voiceOn = stream.mic ? stream.mic.data.ear !== null : false;
   const micHot = stream.mic ? Boolean(stream.mic.data.hot) : null;
+
+  // Personas and the models lobes serves feed the settings row under the dock; what the
+  // operator picks rides with every turn of this conversation (gwen-pm t16).
+  const [personas, setPersonas] = useState<Persona[]>([]);
+  const [builtinId, setBuiltinId] = useState("");
+  const [models, setModels] = useState<ModelsInfo | null>(null);
+  const [settings, setSettings] = useState<ConversationSettings>({});
+  const [personasKey, setPersonasKey] = useState(0);
+  useEffect(() => {
+    let live = true;
+    void listPersonas(appliedSecret).then((out) => {
+      if (!live || !out.ok) return;
+      setPersonas(out.personas);
+      setBuiltinId(out.builtinId);
+    });
+    return () => {
+      live = false;
+    };
+  }, [appliedSecret, personasKey]);
+  useEffect(() => {
+    let live = true;
+    const load = () =>
+      void fetchModels(appliedSecret).then((out) => {
+        if (live && out.ok) setModels(out.info);
+      });
+    load();
+    const t = setInterval(load, 60_000);
+    return () => {
+      live = false;
+      clearInterval(t);
+    };
+  }, [appliedSecret]);
 
   const [view, setView] = useState<View>(() => viewFromHash(currentHash()));
   useEffect(() => {
@@ -637,6 +674,18 @@ export default function App({
               emptyState={emptyState}
               live={live}
               placeholder={narrow ? "Ask Gwen" : undefined}
+              settings={settings}
+              meta={({ unavailable, retry }) => (
+                <DockMeta
+                  personas={personas}
+                  builtinId={builtinId}
+                  models={models}
+                  settings={settings}
+                  onChange={(patch) => setSettings((cur) => ({ ...cur, ...patch }))}
+                  unavailable={unavailable}
+                  onRetry={retry}
+                />
+              )}
             />
             </div>
           </div>
@@ -745,6 +794,25 @@ export default function App({
         {view === "stats" && (
           <section className="view view--page" data-view="stats">
             <StatsView items={items} secret={appliedSecret} />
+          </section>
+        )}
+        {view === "personas" && (
+          <section className="view view--page" data-view="personas">
+            <h1 className="view__title">Personas</h1>
+            <p className="view__lede">
+              How Gwen talks, in your words. A persona sets style, language and a default model. It never changes
+              what she may do.
+            </p>
+            <PersonasView
+              secret={appliedSecret}
+              models={models}
+              onChanged={() => setPersonasKey((k) => k + 1)}
+              onUse={(id) => {
+                setSettings((cur) => ({ ...cur, persona: id }));
+                window.location.hash = "#ask";
+                go("ask");
+              }}
+            />
           </section>
         )}
       </main>

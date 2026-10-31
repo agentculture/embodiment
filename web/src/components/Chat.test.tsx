@@ -256,3 +256,72 @@ describe("Chat: an answer can carry a Read aloud card (embodiment#107 t4 AC4)", 
     expect(screen.queryByRole("group", { name: "Read aloud" })).toBeNull();
   });
 });
+
+describe("Chat: settings and the model-unavailable state (gwen-pm t16)", () => {
+  it("sends the chosen persona, model and language with the question", async () => {
+    const fetchFn = fetchOk({ reply: "ok", sources: [] });
+    render(<Chat secret="k" clientOptions={{ fetchFn }} settings={{ persona: "p1", model: "worker", language: "none" }} />);
+    await send("hi");
+    await screen.findByText("ok");
+    expect(JSON.parse(String(fetchFn.mock.calls[0][1]?.body))).toEqual({
+      message: "hi", persona: "p1", model: "worker", language: "none",
+    });
+  });
+
+  it("app-text-model-unavailable shows its own banner naming the role, reuses chat__degraded, turns the Model control amber", async () => {
+    const fetchFn = vi.fn(async (_u: RequestInfo | URL, _i?: RequestInit) =>
+      ({ ok: false, status: 503, json: async () => ({ ok: false, code: "app-text-model-unavailable" }) }) as Response);
+    const seen: (string | null)[] = [];
+    render(
+      <Chat
+        secret=""
+        clientOptions={{ fetchFn }}
+        settings={{ model: "cortex" }}
+        meta={({ unavailable }) => {
+          seen.push(unavailable);
+          return <span data-testid="meta">{unavailable ?? "fine"}</span>;
+        }}
+      />,
+    );
+    await send("hello");
+    const banner = await screen.findByRole("alert");
+    expect(banner).toHaveClass("chat__degraded");
+    expect(banner.textContent).toContain("cortex");
+    expect(banner.textContent).toContain("isn't available");
+    expect(banner.textContent).not.toContain("Gwen could not answer");
+    expect(screen.getByTestId("meta")).toHaveTextContent("cortex");
+  });
+
+  it("changing the model clears the unavailable state, and Retry resends the same question", async () => {
+    let n = 0;
+    const fetchFn = vi.fn(async (_u: RequestInfo | URL, _i?: RequestInit) => {
+      n += 1;
+      return n === 1
+        ? ({ ok: false, status: 503, json: async () => ({ ok: false, code: "app-text-model-unavailable" }) } as Response)
+        : ({ ok: true, status: 200, json: async () => ({ reply: "now fine", sources: [] }) } as Response);
+    });
+    let retry: (() => void) | undefined;
+    const { rerender } = render(
+      <Chat secret="" clientOptions={{ fetchFn }} settings={{ model: "cortex" }}
+        meta={(s) => { retry = s.retry; return null; }} />,
+    );
+    await send("hello");
+    await screen.findByRole("alert");
+    rerender(
+      <Chat secret="" clientOptions={{ fetchFn }} settings={{ model: "senses" }}
+        meta={(s) => { retry = s.retry; return null; }} />,
+    );
+    retry!();
+    await screen.findByText("now fine");
+    const bodies = fetchFn.mock.calls.map((c) => JSON.parse(String(c[1]?.body)));
+    expect(bodies[1]).toMatchObject({ message: "hello", model: "senses" });
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("other failures keep the old banner", async () => {
+    const fetchFn = vi.fn(async () => ({ ok: false, status: 500, json: async () => ({ error: { code: "boom" } }) }) as Response);
+    render(<Chat secret="" clientOptions={{ fetchFn }} />);
+    await send("x");
+    expect((await screen.findByRole("alert")).textContent).toContain("Gwen could not answer (boom)");
+  });
+});
