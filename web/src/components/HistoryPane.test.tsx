@@ -33,6 +33,9 @@ describe("HistoryPane", () => {
     expect(chip).not.toHaveAttribute("dir", "auto");
     expect(screen.getByText("hello gwen")).toHaveAttribute("dir", "auto");
     expect(screen.queryAllByText(/^thor-lobes$/)).toHaveLength(1);
+    // its row gets the three-column layout (nick | title | time), not the two-column one
+    expect(chip.closest("button")).toHaveClass("conv--agent");
+    expect(screen.getByText("מה במחסן?").closest("button")).not.toHaveClass("conv--agent");
   });
 
   it("offers New conversation when the page can start one", async () => {

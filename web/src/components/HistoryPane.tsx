@@ -105,7 +105,7 @@ export function HistoryPane({ secret = "", clientOptions, openId, refreshKey = 0
               <button
                 key={c.id}
                 type="button"
-                className="row conv"
+                className={c.agent ? "row conv conv--agent" : "row conv"}
                 aria-current={openId === c.id ? "true" : undefined}
                 onClick={() => onOpen(c)}
               >
