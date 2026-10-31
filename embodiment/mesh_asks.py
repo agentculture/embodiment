@@ -79,6 +79,11 @@ class Match:
     ambiguous: bool
     late: bool
     rule: str = RULE_FALLBACK
+    #: The ask had expired when this answer came; it still lands, marked (operator,
+    #: 2026-10-31: "Yes. Via event"). Only exact matches (thread, reply-to) reach an
+    #: expired ask; the nick-addressed fallback stays on open asks, so an ordinary mention
+    #: long after an ask expired is a new conversation, not a stale answer.
+    after_expiry: bool = False
 
 
 def thread_name(ask_id: str) -> str:
@@ -102,14 +107,17 @@ def match_answer(
 ) -> Optional[Match]:
     """The one matching rule (see the module docstring). ``None`` when nothing matches."""
     open_asks = [a for a in asks if a.get("status") == OPEN and now < a["expires_at"]]
+    # Exact matches also reach an ask that expired (or was already answered): a late
+    # answer in the ask's own thread is still that ask's answer.
+    exact_pool = [a for a in asks if a.get("status") in (OPEN, EXPIRED, ANSWERED)]
     chosen: Optional[dict[str, Any]] = None
     ambiguous = False
     rule = RULE_FALLBACK
     if thread:
-        chosen = next((a for a in open_asks if a.get("thread") == thread), None)
+        chosen = next((a for a in exact_pool if a.get("thread") == thread), None)
         rule = RULE_THREAD
     if chosen is None and reply_to:
-        chosen = next((a for a in open_asks if a.get("msgid") == reply_to), None)
+        chosen = next((a for a in exact_pool if a.get("msgid") == reply_to), None)
         rule = RULE_REPLY_TO
     if chosen is None:
         rule = RULE_FALLBACK
@@ -122,8 +130,9 @@ def match_answer(
         chosen = max(same, key=lambda a: a["posted_at"])
         ambiguous = len(same) > 1
     ended = chosen.get("turn_ended_at")
-    late = ended is not None and now > ended
-    return Match(chosen["ask_id"], chosen["conversation_id"], ambiguous, late, rule)
+    after_expiry = chosen.get("status") == EXPIRED or now >= chosen["expires_at"]
+    late = (ended is not None and now > ended) or after_expiry
+    return Match(chosen["ask_id"], chosen["conversation_id"], ambiguous, late, rule, after_expiry)
 
 
 @dataclass(frozen=True)
@@ -315,6 +324,7 @@ class AskBook:
                         "late": m.late,
                         "ambiguous": m.ambiguous,
                         "rule": m.rule,
+                        "after_expiry": m.after_expiry,
                     }
                 )
             ask["status"] = ANSWERED
@@ -325,6 +335,7 @@ class AskBook:
                 "late": m.late,
                 "ambiguous": m.ambiguous,
                 "rule": m.rule,
+                "after_expiry": m.after_expiry,
             }
 
     def all(self) -> list[dict[str, Any]]:

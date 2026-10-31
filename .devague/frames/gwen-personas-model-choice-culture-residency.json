@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-10-31T07:09:13Z",
-  "updated": "2026-10-31T09:19:22Z",
+  "updated": "2026-10-31T09:54:38Z",
   "claims": [
     {
       "id": "c1",
@@ -1416,6 +1416,14 @@
       "finding": "a stdlib socket client registered as gwenprobe-gwen and joined #probe with no culture registration (001 then JOIN, 353/366); THREAD CREATE by gwen reached a second client tagged msgid + agentirc.io/thread=gwen-ask-probe2 with text '[thread:gwen-ask-probe2] probe question', and that client's THREAD REPLY reached gwen tagged the same; confirms c40 and makes thread-name matching exact (plan risk r1); scripts in the session scratchpad probe/",
       "seeds": [
         "c40"
+      ]
+    },
+    {
+      "id": "s39",
+      "surface": "t8: culture issue posted",
+      "finding": "operator approved 2026-10-31 ('Approved post the culture issue'); posted as https://github.com/agentculture/culture/issues/506 via the communicate skill",
+      "seeds": [
+        "c35"
       ]
     }
   ],

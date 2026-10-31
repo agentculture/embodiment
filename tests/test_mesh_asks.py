@@ -32,14 +32,30 @@ def test_file_is_0600_and_survives_restart_with_answer(tmp_path):
     assert b2.all()[0]["status"] == ma.ANSWERED
 
 
-def test_expired_is_shown_never_dropped_and_not_matched(tmp_path):
+def test_expired_is_shown_never_dropped_and_a_mention_does_not_match(tmp_path):
     clock = Clock()
     b = book(tmp_path, clock)
     b.begin_turn("t1")
     b.open_ask("t1", "c", "#r")
     clock.t += ma.DEFAULT_EXPIRY_S + 1
+    # The nick-addressed fallback never reaches an expired ask: a mention is a new turn.
     assert b.answer(NICK, "p", "#r", f"{NICK}: hi") is None
     assert [a["status"] for a in b.all()] == [ma.EXPIRED]
+
+
+def test_an_answer_in_the_thread_after_expiry_still_lands_marked(tmp_path):
+    """Operator, 2026-10-31: a late answer after expiry still lands, marked, via event."""
+    clock = Clock()
+    b = book(tmp_path, clock)
+    b.begin_turn("t1")
+    ask = b.open_ask("t1", "c", "#r")
+    b.end_turn("t1")
+    clock.t += ma.DEFAULT_EXPIRY_S + 1
+    thread = next(a["thread"] for a in b.all())
+    got = b.answer(NICK, "p", "#r", "here at last", thread=thread)
+    assert got is not None and got["conversation_id"] == "c"
+    assert got["after_expiry"] is True and got["late"] is True and got["rule"] == ma.RULE_THREAD
+    assert ask is not None
 
 
 def test_two_hour_late_answer_lands_marked_late(tmp_path):
