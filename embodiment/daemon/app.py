@@ -5865,8 +5865,9 @@ class DaemonApp:
             except queue.Empty:
                 message = None
             if message is not None and not self._mesh_stop.is_set():
-                inbound = message
-                self._safely(lambda: self._mesh_handle(inbound), APP_MESH_FAILED, "mesh")
+                self._safely(
+                    lambda inbound=message: self._mesh_handle(inbound), APP_MESH_FAILED, "mesh"
+                )
             self._safely(self._mesh_tick, APP_MESH_FAILED, "mesh-tick")
 
     def _mesh_handle(self, message: MeshMessage) -> None:
@@ -6153,7 +6154,8 @@ class DaemonApp:
             self._publish("state", {"component": "mesh", "status": "online"})
             return
         records = tuple(getattr(client, "degradations", ()) or ())
-        last = getattr(records[-1], "code", "") if records else ""
+        # The newest record's code, or "" when there is none (no indexing on an empty tuple).
+        last = next((getattr(r, "code", "") for r in reversed(records)), "")
         self._record(APP_MESH_DOWN, _safe_name(last or state), source="mesh")
 
     def _mesh_retry(self, client: Any) -> None:

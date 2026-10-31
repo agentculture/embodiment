@@ -641,7 +641,7 @@ class MeshClient:
                 asyncio.open_connection(cfg.host, cfg.port, limit=MAX_LINE_BYTES * 8),
                 timeout=cfg.connect_deadline,
             )
-        except (OSError, TimeoutError) as exc:
+        except OSError as exc:  # TimeoutError and ConnectionError are OSErrors
             self._record("mesh-connect-failed", describe_exception(exc), streak=True)
             return "failed"
         self._writer = writer
@@ -664,7 +664,7 @@ class MeshClient:
                 return drop.code
             self._record(f"mesh-{drop.code}", drop.reason, streak=not registered)
             return "registered" if registered else "failed"
-        except (OSError, ConnectionError, ValueError, asyncio.IncompleteReadError) as exc:
+        except (OSError, ValueError, asyncio.IncompleteReadError) as exc:
             code = "mesh-connection-dropped" if registered else "mesh-connect-failed"
             self._record(code, describe_exception(exc), streak=not registered)
             return "registered" if registered else "failed"
@@ -752,7 +752,7 @@ class MeshClient:
             line = await outbox.get()
             writer.write((line + "\r\n").encode("utf-8"))
             await writer.drain()
-            if line.startswith("PRIVMSG") or line.startswith("THREAD"):
+            if line.startswith(("PRIVMSG", "THREAD")):
                 self._count("sent")
 
     async def _read_registered(
@@ -878,12 +878,12 @@ class MeshClient:
             if quit_first:
                 writer.write(b"QUIT :Gwen is leaving\r\n")
                 await asyncio.wait_for(writer.drain(), timeout=max(0.01, budget / 2))
-        except (OSError, ConnectionError, TimeoutError):
+        except OSError:  # TimeoutError and ConnectionError are OSErrors
             pass
         try:
             writer.close()
             await asyncio.wait_for(writer.wait_closed(), timeout=max(0.01, budget / 2))
-        except (OSError, ConnectionError, TimeoutError):
+        except OSError:  # TimeoutError and ConnectionError are OSErrors
             pass
         except Exception:  # noqa: BLE001  # a raising close is reported, not raised
             with self._lock:
