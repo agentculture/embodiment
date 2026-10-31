@@ -64,6 +64,8 @@ MAX_TEXT_CHARS = 2000
 MAX_ANSWERS_PER_ASK = 20
 
 OPEN, ANSWERED, EXPIRED = "open", "answered", "expired"
+#: The post never reached the mesh (plan risk r8): closed at once, kept, never answered.
+FAILED = "failed"
 
 REFUSE_TURN_LIMIT = "ask-refused-one-per-turn"
 REFUSE_MESH_TURN = "ask-refused-mesh-started-turn"
@@ -171,7 +173,7 @@ class AskBook:
             and isinstance(ask, dict)
             and all(isinstance(ask.get(k), str) for k in ("conversation_id", "channel"))
             and all(isinstance(ask.get(k), (int, float)) for k in ("posted_at", "expires_at"))
-            and ask.get("status") in (OPEN, ANSWERED, EXPIRED)
+            and ask.get("status") in (OPEN, ANSWERED, EXPIRED, FAILED)
         )
 
     def _load(self) -> dict[str, dict[str, Any]]:
@@ -293,6 +295,21 @@ class AskBook:
                 return self._refuse(REFUSE_SAVE, turn_id=turn_id)
             self._turns_asked[turn_id] = self._turns_asked.get(turn_id, 0) + 1
             return Result(True, ask=dict(ask))
+
+    def fail(self, ask_id: str) -> bool:
+        """Close an OPEN ask whose post failed (r8), so it holds no open-ask slot.
+
+        ``True`` when an open ask was closed (and saved); ``False`` for an unknown or
+        already-closed id. The ask is kept, marked :data:`FAILED`, and never matched.
+        """
+        with self._lock:
+            asks = self._load()
+            ask = asks.get(ask_id)
+            if ask is None or ask["status"] != OPEN:
+                return False
+            ask["status"] = FAILED
+            self._save(asks)
+            return True
 
     def answer(
         self,

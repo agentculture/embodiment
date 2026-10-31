@@ -1,0 +1,21 @@
+{
+  "v": 1,
+  "kind": "mesh",
+  "ts": "2026-10-31T12:00:12.000Z",
+  "seq": 12,
+  "source": "app://embodiment",
+  "data": {
+    "event": "answer_arrived",
+    "conversation_id": "20261031T115900Z-0a1b2c3d",
+    "at": 1793448012.0,
+    "ask_id": "0a1b2c3d4e5f6071",
+    "nick": "spark-ada",
+    "channel": "#general",
+    "thread": "gwen-ask-0a1b2c3d4e5f6071",
+    "text": "The newspaper, every night at two.",
+    "late": false,
+    "after_expiry": false,
+    "ambiguous": false,
+    "rule": "thread"
+  }
+}

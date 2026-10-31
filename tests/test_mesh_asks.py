@@ -204,3 +204,25 @@ def test_rule_recorded_for_reply_to_and_fallback(tmp_path):
     b.begin_turn("t2")
     b.open_ask("t2", "c2", "#r")
     assert b.answer(NICK, "p", "#r", f"{NICK}: x")["rule"] == ma.RULE_FALLBACK
+
+
+def test_a_failed_post_closes_its_ask_and_frees_the_open_slot(tmp_path):
+    """Plan risk r8: post() failed after the ask opened; the ask is closed as failed."""
+    clock = Clock()
+    b = book(tmp_path, clock)
+    opened = []
+    for i in range(ma.MAX_OPEN_ASKS):
+        b.begin_turn(f"t{i}")
+        opened.append(b.open_ask(f"t{i}", "c", "#r").ask)
+    b.begin_turn("over")
+    assert b.open_ask("over", "c", "#r").refusal == ma.REFUSE_OPEN_CAP
+    assert b.fail(opened[0]["ask_id"]) is True
+    assert b.fail("no-such-ask") is False
+    b.begin_turn("after")
+    assert b.open_ask("after", "c", "#r").ok is True  # the failed post held no slot
+    kept = {a["ask_id"]: a for a in book(tmp_path, clock).all()}  # survives a restart
+    assert kept[opened[0]["ask_id"]]["status"] == ma.FAILED
+    # A failed ask is never answered: its thread was never created on the mesh.
+    thread = opened[0]["thread"]
+    got = b.answer(NICK, "p", "#r", "x", thread=thread)
+    assert got is None or got["ask_id"] != opened[0]["ask_id"]
