@@ -113,14 +113,14 @@ function LivePanel({ view }: { view: LiveView | undefined }) {
   const reasoning = liveReasoning(view);
   if (!reasoning && !view?.content) return null;
   return (
-    <div className="live" aria-live="off">
+    <div className="livetext" aria-live="off">
       {reasoning && (
-        <p className="live__reasoning" dir="auto">
+        <p className="livetext__reasoning" dir="auto">
           {reasoning}
         </p>
       )}
       {view?.content && (
-        <p className="live__answer" dir="auto">
+        <p className="livetext__answer" dir="auto">
           {view.content}
         </p>
       )}
