@@ -462,7 +462,7 @@ export function Chat({
         m.map((msg): Message => {
           if (msg.waiting !== id) return msg;
           if (outcome === null) {
-            return { ...msg, waiting: undefined, note: "This answer was lost when Gwen restarted. Ask again, or look for it in this conversation's history." };
+            return { ...msg, waiting: undefined, note: "Gwen has no answer for this question: it never arrived, or Gwen restarted. Ask again, or look in this conversation's history." };
           }
           if (!outcome.ok) return { ...msg, waiting: undefined, note: `Gwen could not answer (${outcome.code}).` };
           if (outcome.value.turnSerial !== null) typedSerials.current.add(outcome.value.turnSerial);
@@ -514,7 +514,9 @@ export function Chat({
       setBusy(false);
       return;
     }
-    removePending(requestId);
+    // A request cut off in flight (network-error: the page was left, or the daemon is
+    // down) stays pending: the daemon may have the turn, and the next visit asks for it.
+    if (outcome.ok || outcome.code !== "network-error") removePending(requestId);
     if (outcome.ok) {
       setDegraded(null);
       setUnavailableRole(null);

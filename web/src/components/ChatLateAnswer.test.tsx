@@ -72,7 +72,7 @@ describe("an answer that outlives its request", () => {
   it("says plainly when the answer was lost to a restart", async () => {
     addPending({ id: "req-lost000000", question: "lost one", conversation: null, at: Date.now() });
     render(<Chat secret="k" clientOptions={{ fetchFn: server({ status: 200, body: {} }, [{ state: "unknown", result: null }]) }} pollMs={10} />);
-    expect(await screen.findByText(/This answer was lost/)).toBeInTheDocument();
+    expect(await screen.findByText(/has no answer for this question/)).toBeInTheDocument();
     expect(loadPending()).toEqual([]);
   });
 
@@ -81,6 +81,25 @@ describe("an answer that outlives its request", () => {
     render(<Chat secret="k" clientOptions={{ fetchFn }} pollMs={10} />);
     await send("q");
     expect(await screen.findByText(/could not answer/)).toHaveTextContent("app-text-model-unavailable");
+  });
+
+  it("a POST cut off mid-flight says so, and the next visit recovers its answer", async () => {
+    const cut = vi.fn(async () => { throw new TypeError("Failed to fetch"); });
+    const first = render(<Chat secret="k" clientOptions={{ fetchFn: cut as unknown as typeof fetch }} pollMs={10} />);
+    await send("cut off");
+    expect(await screen.findByRole("alert")).toHaveTextContent("network-error");
+    expect(loadPending().map((p) => p.question)).toEqual(["cut off"]);
+    first.unmount();
+    const fetchFn = server({ status: 200, body: {} }, [done("Recovered after the cut.")]);
+    render(<Chat secret="k" clientOptions={{ fetchFn }} pollMs={10} />);
+    expect(await screen.findByText(/Recovered after the cut/)).toBeInTheDocument();
+    expect(loadPending()).toEqual([]);
+  });
+
+  it("a cut-off POST the daemon never received ends with a plain note, not a hang", async () => {
+    addPending({ id: "req-never00000", question: "never arrived", conversation: null, at: Date.now() });
+    render(<Chat secret="k" clientOptions={{ fetchFn: server({ status: 200, body: {} }, [{ state: "unknown", result: null }]) }} pollMs={10} />);
+    expect(await screen.findByText(/has no answer for this question/)).toBeInTheDocument();
   });
 
   it("a request answered in time leaves nothing pending", async () => {
