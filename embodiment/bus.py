@@ -311,6 +311,7 @@ EVENT_KINDS: frozenset[str] = frozenset(
         "conversation",
         "todo",
         "mesh",
+        "stream",
     }
 )
 
@@ -319,7 +320,8 @@ EVENT_KINDS: frozenset[str] = frozenset(
 #: See the module docstring's privacy-boundary section. Excluded from a
 #: subscription by default (round 2, defect 6b) — pass
 #: ``Bus.subscribe(include_speech=True)`` or an explicit ``kinds=`` to get them.
-SPEECH_KINDS: frozenset[str] = frozenset({"transcript", "reply", "mesh"})
+#: ``stream`` (deviation d5) too: a typed turn's reasoning and answer as they arrive.
+SPEECH_KINDS: frozenset[str] = frozenset({"transcript", "reply", "mesh", "stream"})
 
 #: Kinds that never leave this process for the broker. Only ``conversation``:
 #: conversations are Gwen's own business (deviation d8), so nothing outside the
@@ -437,6 +439,7 @@ _REQUIRED_DATA_FIELDS: dict[str, tuple[str, ...]] = {
     "conversation": ("id", "status", "last", "turns"),
     "todo": ("id", "done", "at", "by"),
     "mesh": ("event", "conversation_id", "at"),
+    "stream": ("request_id", "channel", "text"),
 }
 
 #: Kinds dropped FIRST under queue back-pressure — a subscriber's own queue
@@ -444,7 +447,9 @@ _REQUIRED_DATA_FIELDS: dict[str, tuple[str, ...]] = {
 #: same policy (:func:`_drop_policy`, lesson 8: one code path). Currently just
 #: ``features`` — the high-rate kind named in the brief — kept as a set rather
 #: than a single constant so a future high-rate kind can join it in one place.
-_DROP_FIRST_KINDS: frozenset[str] = frozenset({"features"})
+#: ``stream`` (d5) joins it: each event carries the text so far, so a dropped one is
+#: superseded by the next and nothing is lost but a frame of the live view.
+_DROP_FIRST_KINDS: frozenset[str] = frozenset({"features", "stream"})
 
 
 def _now_rfc3339() -> str:

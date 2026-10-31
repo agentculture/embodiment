@@ -342,6 +342,10 @@ describe("useEventStream", () => {
           expect(result.current.degradations[0]?.data).toEqual(fixture.data);
         } else if (kind === "heartbeat") {
           expect(result.current.lastHeartbeatAtMs).not.toBeNull();
+        } else if (kind === "stream") {
+          // Live text (d5) is folded into a map by request id, not kept as events.
+          const d = fixture.data as { request_id: string; channel: "reasoning" | "content"; text: string };
+          expect(result.current.liveText[d.request_id]?.[d.channel]).toBe(d.text);
         } else if (kind === "mesh") {
           // Mesh events accumulate in a bounded list, like degradations.
           expect(result.current.mesh).toHaveLength(1);

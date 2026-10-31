@@ -62,6 +62,10 @@
     "mesh": {
       "required": ["event", "conversation_id", "at"],
       "note": "SPEECH-CARRYING (t15): Gwen on the Culture mesh. event: one of 'ask_posted' (ask_id, channel, thread, text = the question, expires_at), 'answer_arrived' (ask_id, nick, channel, thread, text = the agent's words, UNTRUSTED, late, after_expiry, ambiguous, rule), 'ask_expired' (ask_id, channel, thread), 'agent_contacted' (nick, channel or null for a DM, thread, direct, text = the agent's words, UNTRUSTED), 'gwen_replied' (nick, channel, thread, direct, text = Gwen's reply, sent: whether the mesh client accepted it). conversation_id: the session-log id the event belongs to (the ask's conversation, or the agent's own). at: epoch seconds."
+    },
+    "stream": {
+      "required": ["request_id", "channel", "text"],
+      "note": "SPEECH-CARRYING (deviation d5): a typed turn's live text, for the page that asked. request_id: the page's chat request id. channel: 'reasoning' or 'content'. text: everything that channel has said so far in this model step (cumulative, scrubbed like a reply; a later event supersedes an earlier one). step: the model step, from 0. Dropped first under back-pressure."
     }
   }
 }

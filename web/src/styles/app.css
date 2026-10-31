@@ -835,3 +835,22 @@ button.source-open:hover { border-color: var(--cobalt); box-shadow: var(--shadow
   border-radius: var(--radius-s); color: var(--ink); font-size: var(--step--1);
 }
 .answer-fallback code { font-family: var(--mono); font-size: 0.75rem; }
+
+/* Live text of a turn being answered (deviation d5): reasoning muted and scrolled to its
+   newest lines, then the answer as it forms. Folded under the answer once it lands. */
+.live { display: grid; gap: 0.5rem; margin-block-start: 0.5rem; }
+.live__reasoning {
+  margin: 0; padding: 0.45rem 0.7rem; max-block-size: 9.5rem; overflow-y: auto;
+  display: flex; flex-direction: column-reverse; /* keeps the newest line in view */
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  font-size: var(--step--1); color: var(--quiet);
+  border-inline-start: 3px solid var(--rule); background: var(--well); border-radius: var(--radius-s);
+}
+.live__answer { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.answer-reasoning { margin-block-end: 0.4rem; font-size: var(--step--1); color: var(--quiet); }
+.answer-reasoning summary { cursor: pointer; inline-size: fit-content; }
+.answer-reasoning p {
+  margin: 0.35rem 0 0; padding: 0.45rem 0.7rem; max-block-size: 16rem; overflow-y: auto;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  border-inline-start: 3px solid var(--rule); background: var(--well); border-radius: var(--radius-s);
+}

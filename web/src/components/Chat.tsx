@@ -18,6 +18,7 @@ import {
   type ChatSource,
 } from "../api/chat";
 import { addPending, loadPending, removePending, type PendingChat } from "../api/pendingChats";
+import { liveReasoning, type LiveMap, type LiveView } from "../api/liveText";
 import type { ConversationSettings } from "../api/models";
 import { stripCitations, splitCitations } from "../api/citations";
 import { parseBlocks, type Inline, type ListBlock } from "./markdown";
@@ -55,6 +56,8 @@ export interface ChatProps {
   meta?: (state: ChatMetaState) => ReactNode;
   /** How often a still-running answer is asked for (GET /api/chat/{id}). */
   pollMs?: number;
+  /** Streamed text by request id (d5): shown while a question of this chat is answered. */
+  liveText?: LiveMap;
 }
 
 export interface ChatMetaState {
@@ -101,6 +104,28 @@ interface Message {
   waiting?: string;
   /** A note in place of an answer (the turn refused, or the answer was lost). */
   note?: string;
+  /** The reasoning that streamed while it was answered (d5), shown folded. */
+  reasoning?: string;
+}
+
+/** What has streamed so far for one request: reasoning muted, then the answer. Text only. */
+function LivePanel({ view }: { view: LiveView | undefined }) {
+  const reasoning = liveReasoning(view);
+  if (!reasoning && !view?.content) return null;
+  return (
+    <div className="live" aria-live="off">
+      {reasoning && (
+        <p className="live__reasoning" dir="auto">
+          {reasoning}
+        </p>
+      )}
+      {view?.content && (
+        <p className="live__answer" dir="auto">
+          {view.content}
+        </p>
+      )}
+    </div>
+  );
 }
 
 /** The chat this pending question belongs to: its conversation, or the live one. */
@@ -393,6 +418,7 @@ export function Chat({
   settings,
   meta,
   pollMs = 3000,
+  liveText = {},
 }: ChatProps) {
   const [draft, setDraft] = useState("");
   const [messages, setMessages] = useState<Message[]>(() => {
@@ -419,6 +445,10 @@ export function Chat({
   const lastQuestion = useRef("");
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState<string | null>(null);
+  // The request now being answered in the open (d5): its live text is drawn under it.
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const liveRef = useRef(liveText);
+  liveRef.current = liveText;
   const baselineSeq = useRef<number | null>(null);
   const typedSerials = useRef<Set<number>>(new Set());
   const seen = useRef<Set<number>>(new Set());
@@ -473,6 +503,7 @@ export function Chat({
             sources: outcome.value.sources,
             fallback: outcome.value.fallback,
             reveal: !calmMotion(),
+            reasoning: liveReasoning(liveRef.current[id]) || undefined,
           };
         }),
       );
@@ -504,6 +535,7 @@ export function Chat({
     baselineSeq.current = replyEvents.reduce((mx, e) => Math.max(mx, e.seq), 0);
     setMessages((m) => [...m, { key: `u-${m.length}`, role: "user", text, sources: [] }]);
     const requestId = newRequestId();
+    setActiveId(requestId);
     addPending({ id: requestId, question: text, conversation: conversation ?? null, at: Date.now() });
     const outcome = await sendChat(text, secret, clientOptions, conversation, settings, requestId);
     if (!outcome.ok && outcome.code === CHAT_TIMEOUT_CODE) {
@@ -511,6 +543,7 @@ export function Chat({
       setDegraded(null);
       setMessages((m) => [...m, { key: `w-${requestId}`, role: "assistant", text: "", sources: [], waiting: requestId }]);
       setPending(null);
+      setActiveId(null);
       setBusy(false);
       return;
     }
@@ -531,6 +564,7 @@ export function Chat({
           sources: outcome.value.sources,
           fallback: outcome.value.fallback,
           reveal: !calmMotion(),
+          reasoning: liveReasoning(liveRef.current[requestId]) || undefined,
         },
       ]);
     } else {
@@ -541,6 +575,7 @@ export function Chat({
       );
     }
     setPending(null);
+    setActiveId(null);
     setBusy(false);
   }
 
@@ -592,15 +627,24 @@ export function Chat({
             >
               <span className="sr-only">assistant: </span>
               {m.waiting ? (
-                <p className="answer answer--pending answer--waiting" role="status">
-                  Still working on this. The answer will appear here, even if you leave and come back.
-                </p>
+                <>
+                  <p className="answer answer--pending answer--waiting" role="status">
+                    Still working on this. The answer will appear here, even if you leave and come back.
+                  </p>
+                  <LivePanel view={liveText[m.waiting]} />
+                </>
               ) : m.note ? (
                 <p className="answer-fallback" role="note">
                   {m.note}
                 </p>
               ) : (
               <>
+              {m.reasoning && (
+                <details className="answer-reasoning">
+                  <summary>Reasoning</summary>
+                  <p dir="auto">{m.reasoning}</p>
+                </details>
+              )}
               <div className="answer" dir="auto">
                 <Answer text={m.text} sources={m.sources} reveal={!!m.reveal} onOpen={onOpenCitation} />
               </div>
@@ -629,6 +673,7 @@ export function Chat({
         {pending && (
           <li className="turn turn--a turn--pending" aria-label="Gwen is answering">
             <p className="answer answer--pending">Reading your library</p>
+            <LivePanel view={activeId ? liveText[activeId] : undefined} />
           </li>
         )}
       </ol>

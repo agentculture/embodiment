@@ -2,7 +2,7 @@
   "plan_slug": "gwen-personas-model-choice-culture-residency",
   "schema_version": 2,
   "created": "2026-10-31T09:53:28Z",
-  "updated": "2026-10-31T12:49:45Z",
+  "updated": "2026-10-31T15:34:09Z",
   "deviations": [
     {
       "id": "d1",
@@ -46,6 +46,28 @@
       "status": "proposed",
       "classification": "acceptable",
       "seq": 3
+    },
+    {
+      "id": "d4",
+      "what": "A typed answer outlives its HTTP request: the page names each chat with a request_id; the daemon keeps the result (pending then done, 128, in memory) at GET /api/chat/{request_id} and tags the reply event; on http-control-timeout the page waits ('Still working on this') instead of failing, and questions left pending (id, question, conversation in localStorage, never the secret) are recovered on the next visit",
+      "task_ref": "t19",
+      "reason": "t19 live: a cortex turn answered at 80.2 s after the route gave up at 65 s and the answer reached only the log; operator chose option A ('A then C') and added 'It also solves recovering an answer after user left page'",
+      "affects": [],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 4
+    },
+    {
+      "id": "d5",
+      "what": "Every chat completion streams (stream: true): the per-call 60 s read timeout becomes a bound on SILENCE between chunks, not on length (lesson 1); reasoning and answer tokens of a typed turn are published to the page as they arrive and shown live; no reasoning summary yet",
+      "task_ref": "t19",
+      "reason": "t19 live: cortex calls cut off by the 60 s completion deadline (turn-seam-aborted) 2 of 3 runs; probe 2026-10-31 showed lobes already streams content, reasoning and tool calls for senses/cortex/worker (first token <=0.25 s, max gap 0.32 s); operator: 'stream the tokens for now, so we can see reasoning and no timeout'",
+      "affects": [],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up",
+      "seq": 5
     }
   ],
   "evidence": [],

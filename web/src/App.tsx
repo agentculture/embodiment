@@ -665,6 +665,7 @@ export default function App({
                 chat={{
                   onOpenCitation: openCitation,
                   onAnswer,
+                  liveText: stream.liveText,
                   placeholder: narrow ? "Ask Gwen" : "Continue this conversation",
                 }}
               />
@@ -682,6 +683,7 @@ export default function App({
               key={liveKey}
               secret={appliedSecret}
               replyEvents={transcriptNow}
+              liveText={stream.liveText}
               s2sRole={stream.s2sRole ?? undefined}
               onOpenCitation={openCitation}
               onAnswer={onAnswer}

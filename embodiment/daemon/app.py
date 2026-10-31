@@ -1753,8 +1753,16 @@ def http_complete(
     role: str = "senses",
     max_tokens: int = 16000,
     deadline: float = 60.0,
+    stream: bool = False,
+    on_delta: Optional[Callable[[str, str], None]] = None,
 ) -> ModelResponse:
     """``POST /v1/chat/completions`` on the lobes gateway, resolving by ROLE name.
+
+    With *stream* (deviation d5) the gateway answers server-sent chunks and *deadline*
+    is the socket read timeout between them: a bound on SILENCE, never on the answer's
+    length (lesson 1; the 2026-10-31 probe measured first token <= 0.25 s and the
+    longest gap 0.32 s on senses, cortex and worker). *on_delta* gets each piece of
+    ``reasoning`` and ``content`` as it arrives; it may not break the completion.
 
     The role goes in ``model`` because lobes resolves a role **by name** and
     never by parsing a model name (``CLAUDE.md``, "the realtime interface").
@@ -1776,6 +1784,9 @@ def http_complete(
     }
     if tools:
         payload["tools"] = tools
+    if stream:
+        payload["stream"] = True
+        payload["stream_options"] = {"include_usage": True}
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if api_key:
@@ -1787,15 +1798,21 @@ def http_complete(
         with urllib.request.urlopen(  # nosec B310 - scheme checked above
             request, timeout=deadline
         ) as response:
-            raw = json.loads(response.read().decode("utf-8"))
+            # A gateway (or a role) that ignores ``stream`` answers plain JSON: read that.
+            streamed = stream and _is_event_stream(response)
+            if streamed:
+                message, usage = _read_stream(response, on_delta)
+            else:
+                raw = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         unavailable = _role_unavailable(exc, role)
         if unavailable is not None:
             raise unavailable from None
         raise
-    choices = raw.get("choices") or []
-    message = (choices[0].get("message") if choices else None) or {}
-    usage = raw.get("usage") or {}
+    if not streamed:
+        choices = raw.get("choices") or []
+        message = (choices[0].get("message") if choices else None) or {}
+        usage = raw.get("usage") or {}
     return ModelResponse.from_dict(
         {
             "content": message.get("content") or "",
@@ -1805,6 +1822,189 @@ def http_complete(
             "completion_tokens": usage.get("completion_tokens") or 0,
         }
     )
+
+
+#: The most text one streamed completion may carry (reasoning + answer + tool arguments).
+#: ``max_tokens`` bounds a well-behaved model; this bounds a misbehaving stream.
+MAX_STREAM_CHARS = 1_000_000
+
+
+def _is_event_stream(response: Any) -> bool:
+    headers = getattr(response, "headers", None)
+    ctype = headers.get("Content-Type", "") if hasattr(headers, "get") else ""
+    return isinstance(ctype, str) and ctype.lower().startswith("text/event-stream")
+
+
+def _read_stream(
+    response: Any, on_delta: Optional[Callable[[str, str], None]]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Assemble a streamed completion into ``(message, usage)``, the non-streamed shapes.
+
+    Lines that are not ``data:`` JSON are skipped; ``[DONE]`` ends it, and so does the
+    end of the body. Tool-call pieces are joined by their ``index``.
+    """
+    content: list[str] = []
+    reasoning: list[str] = []
+    calls: dict[int, dict[str, Any]] = {}
+    usage: dict[str, Any] = {}
+    size = 0
+    for raw_line in response:
+        line = raw_line.decode("utf-8", "replace").strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            break
+        try:
+            chunk = json.loads(data)
+        except (ValueError, RecursionError):
+            continue
+        if not isinstance(chunk, dict):
+            continue
+        if isinstance(chunk.get("usage"), dict):
+            usage = chunk["usage"]
+        for choice in chunk.get("choices") or []:
+            delta = choice.get("delta") if isinstance(choice, dict) else None
+            if not isinstance(delta, dict):
+                continue
+            for channel, sink, keys in (
+                ("reasoning", reasoning, ("reasoning", "reasoning_content")),
+                ("content", content, ("content",)),
+            ):
+                piece = next((delta[k] for k in keys if isinstance(delta.get(k), str)), "")
+                if piece:
+                    sink.append(piece)
+                    size += len(piece)
+                    _feed(on_delta, channel, piece)
+            size += _join_tool_calls(calls, delta.get("tool_calls"))
+        if size > MAX_STREAM_CHARS:
+            raise ValueError("the streamed completion exceeded its size bound")
+    message = {
+        "content": "".join(content),
+        "reasoning": "".join(reasoning),
+        "tool_calls": [calls[i] for i in sorted(calls)],
+    }
+    return message, usage
+
+
+#: The live view of a typed turn (d5) failed and stopped for that turn; the answer still lands.
+APP_STREAM_FAILED = "app-stream-failed"
+#: The pseudo-channel a seam sends before each model call (d5): a new step begins.
+STREAM_STEP = "step"
+#: Live text is published at most this often per channel (seconds); a judgement call
+#: for a page to read, not a measured value. The last text of a step is always sent.
+STREAM_PUBLISH_INTERVAL_S = 0.25
+#: The most of one channel's text one ``stream`` event carries: the newest characters.
+MAX_STREAM_EVENT_CHARS = 20_000
+
+
+class _LiveText:
+    """A typed turn's streamed text, published as cumulative ``stream`` events (d5).
+
+    Called with ``(channel, piece)`` on the turn's own thread; ``step`` starts a new
+    model call. Each event carries the channel's text so far in this step, scrubbed,
+    so a dropped event is superseded by the next one. Never raises into the turn.
+    """
+
+    def __init__(
+        self,
+        publish: Callable[[str, dict[str, Any]], Any],
+        redact: Callable[[str], str],
+        request_id: str,
+        record: Optional[Callable[[str, str], Any]] = None,
+    ) -> None:
+        self._publish = publish
+        self._redact = redact
+        self._request_id = request_id
+        self._record = record
+        self._broken = False
+        self._step = 0
+        self._text: dict[str, list[str]] = {"reasoning": [], "content": []}
+        self._sent_at: dict[str, float] = {}
+        self._dirty: set[str] = set()
+
+    def __call__(self, channel: str, piece: str) -> None:
+        if self._broken:
+            return
+        try:
+            self._take(channel, piece)
+        except Exception as exc:  # noqa: BLE001  # the live view may fail; the turn may not
+            self._broken = True
+            if self._record is not None:
+                self._record(
+                    APP_STREAM_FAILED, f"live text stopped: {safe_reason.describe_exception(exc)}"
+                )
+
+    def _take(self, channel: str, piece: str) -> None:
+        if channel == STREAM_STEP:
+            if any(self._text.values()):
+                self.flush()
+                self._step += 1
+                self._text = {"reasoning": [], "content": []}
+            return
+        if channel not in self._text or not piece:
+            return
+        self._text[channel].append(piece)
+        self._dirty.add(channel)
+        now = time.monotonic()
+        if now - self._sent_at.get(channel, float("-inf")) >= STREAM_PUBLISH_INTERVAL_S:
+            self._send(channel, now)
+
+    def flush(self) -> None:
+        """Send every channel with text not yet published."""
+        if self._broken:
+            return
+        try:
+            for channel in sorted(self._dirty):
+                self._send(channel, time.monotonic())
+        except Exception as exc:  # noqa: BLE001  # as __call__: recorded, never raised
+            self._broken = True
+            if self._record is not None:
+                self._record(
+                    APP_STREAM_FAILED, f"live text stopped: {safe_reason.describe_exception(exc)}"
+                )
+
+    def _send(self, channel: str, now: float) -> None:
+        self._sent_at[channel] = now
+        self._dirty.discard(channel)
+        text = self._redact("".join(self._text[channel]))
+        self._publish(
+            "stream",
+            {
+                "request_id": self._request_id,
+                "channel": channel,
+                "text": text[-MAX_STREAM_EVENT_CHARS:],
+                "cut": len(text) > MAX_STREAM_EVENT_CHARS,
+                "step": self._step,
+            },
+        )
+
+
+def _join_tool_calls(calls: dict[int, dict[str, Any]], pieces: Any) -> int:
+    """Fold streamed tool-call pieces into *calls* by index; the characters added."""
+    added = 0
+    for piece in pieces if isinstance(pieces, list) else []:
+        if not isinstance(piece, dict):
+            continue
+        index = piece.get("index") if isinstance(piece.get("index"), int) else len(calls)
+        call = calls.setdefault(
+            index, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
+        )
+        if isinstance(piece.get("id"), str) and piece["id"]:
+            call["id"] = piece["id"]
+        function = piece.get("function") if isinstance(piece.get("function"), dict) else {}
+        for key in ("name", "arguments"):
+            if isinstance(function.get(key), str):
+                call["function"][key] += function[key]
+                added += len(function[key])
+    return added
+
+
+def _feed(on_delta: Optional[Callable[[str, str], None]], channel: str, piece: str) -> None:
+    """Hand one piece to the sink. The sink must not raise: :class:`_LiveText` records its
+    own failure and goes quiet rather than break the completion."""
+    if on_delta is not None:
+        on_delta(channel, piece)
 
 
 class TextModelUnavailable(RuntimeError):
@@ -1866,19 +2066,44 @@ class RoleHolder:
         self._default = (role, float(deadline))
         self._tls = threading.local()
 
+    def sink(self) -> Optional[Callable[[str, str], None]]:
+        """Where this thread's streamed pieces go (deviation d5), or ``None``."""
+        return getattr(self._tls, "sink", None)
+
+    @contextlib.contextmanager
+    def streaming(self, sink: Callable[[str, str], None]) -> Any:
+        """Feed every streamed piece of the completions inside this block to *sink*."""
+        previous = getattr(self._tls, "sink", None)
+        self._tls.sink = sink
+        try:
+            yield
+        finally:
+            self._tls.sink = previous
+
     def current(self) -> tuple[str, float]:
         """``(role, deadline)`` for a completion on this thread."""
         return getattr(self._tls, "target", None) or self._default
 
     @contextlib.contextmanager
-    def using(self, role: str, deadline: float) -> Any:
-        """Ask *role* under *deadline* for the completions inside this block."""
+    def using(self, role: str, deadline: float, *, stream: bool = False) -> Any:
+        """Ask *role* under *deadline* for the completions inside this block.
+
+        With *stream* (typed turns, d5) the completion streams and *deadline* bounds
+        the silence between chunks; without it (spoken turns) *deadline* stays the
+        bound on the whole completion, which the voice gate derived as a total."""
         previous = getattr(self._tls, "target", None)
+        previous_stream = getattr(self._tls, "stream", False)
         self._tls.target = (role, float(deadline))
+        self._tls.stream = stream
         try:
             yield
         finally:
             self._tls.target = previous
+            self._tls.stream = previous_stream
+
+    def streams(self) -> bool:
+        """Whether this thread's completions stream (set by :meth:`using`)."""
+        return bool(getattr(self._tls, "stream", False))
 
 
 def gateway_seam(config: "AppConfig", holder: RoleHolder) -> Callable[..., ModelResponse]:
@@ -1886,6 +2111,10 @@ def gateway_seam(config: "AppConfig", holder: RoleHolder) -> Callable[..., Model
 
     def seam(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
         role, deadline = holder.current()
+        sink = holder.sink()
+        stream = holder.streams() or sink is not None
+        if stream:
+            _feed(sink, STREAM_STEP, "")  # a new model step: the page starts a fresh view
         return http_complete(
             messages,
             tools=tools,
@@ -1893,6 +2122,8 @@ def gateway_seam(config: "AppConfig", holder: RoleHolder) -> Callable[..., Model
             api_key=config.api_key,
             role=role,
             deadline=deadline,
+            stream=stream,
+            on_delta=sink,
         )
 
     return seam
@@ -2978,12 +3209,7 @@ class DaemonApp:
         has already made it harmless.
         """
         value = _as_text(text)
-        if not value or not self._secret_forms:
-            return value
-        scrubbed = value
-        for form in self._secret_forms:
-            if form in scrubbed:
-                scrubbed = scrubbed.replace(form, REPLY_REDACTED)
+        scrubbed = self._redacted(value)
         if scrubbed == value:
             return value
         with self._lock:
@@ -2994,6 +3220,18 @@ class DaemonApp:
             once=True,
         )
         return scrubbed
+
+    def _redacted(self, value: str) -> str:
+        """*value* with every form of the daemon's secrets replaced; nothing counted.
+
+        :meth:`_scrub_reply` counts and records a hit; live text (d5) is re-scrubbed on
+        every snapshot of the same words, so it uses this and the reply counts once."""
+        if not value or not self._secret_forms:
+            return value
+        for form in self._secret_forms:
+            if form in value:
+                value = value.replace(form, REPLY_REDACTED)
+        return value
 
     def _scrubbing_summariser(self) -> Optional[Callable[[list[dict[str, Any]]], str]]:
         """The injected summariser, with its answer scrubbed on the way out.
@@ -4063,7 +4301,7 @@ class DaemonApp:
             ),
         )
         before = self._tool_counts()
-        with self._role_holder.using(target.role, target.deadline):
+        with self._role_holder.using(target.role, target.deadline, stream=path == "typed"):
             result = run_one_turn(query, complete, tools=tools, config=config)
         if refused:
             result = self._unavailable_result(refused[0], result)
@@ -4360,9 +4598,26 @@ class DaemonApp:
         # An agent's turn (t15) is labelled on the page with its conversation and nick.
         labels = {"conversation": conversation, "mesh": inbound.nick} if inbound is not None else {}
         self._publish("transcript", {"role": "user", "text": message, "typed": True, **labels})
+        request_id = getattr(self._tls, "chat_request_id", None)
+        live = (
+            _LiveText(
+                self._publish,
+                self._redacted,
+                request_id,
+                lambda code, reason: self._record(code, reason, source="text", once=True),
+            )
+            if request_id
+            else None
+        )
         try:
-            outcome = self._text_recall.run_turn(message)
+            if live is not None:
+                with self._role_holder.streaming(live):
+                    outcome = self._text_recall.run_turn(message)
+            else:
+                outcome = self._text_recall.run_turn(message)
         finally:
+            if live is not None:
+                live.flush()
             turn.replying = False
             self._mesh_end(turn)
         reply = turn.final_text or turn.first_text or " ".join(outcome.spoken)

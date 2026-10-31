@@ -23,6 +23,7 @@ export const EVENT_KINDS = [
   "conversation",
   "todo",
   "mesh",
+  "stream",
 ] as const;
 
 export type EventKind = (typeof EVENT_KINDS)[number];
@@ -30,7 +31,7 @@ export type EventKind = (typeof EVENT_KINDS)[number];
 /** kind -> whether it can carry speech (schema.json's own note on
  *  transcript/reply; mirrors embodiment.bus.SPEECH_KINDS). Never rendered
  *  outside the transcript pane. */
-export const SPEECH_KINDS: ReadonlySet<EventKind> = new Set(["transcript", "reply", "mesh"]);
+export const SPEECH_KINDS: ReadonlySet<EventKind> = new Set(["transcript", "reply", "mesh", "stream"]);
 
 /**
  * embodiment/bus.py's HEARTBEAT_INTERVAL_S (embodiment/bus.py, module
