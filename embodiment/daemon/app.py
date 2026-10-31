@@ -200,9 +200,11 @@ from embodiment.library.todo_source import UNAVAILABLE as TODOS_UNAVAILABLE
 from embodiment.library.todo_source import TodoSource
 from embodiment.memory import PRIVATE, RoomMemory, SemanticRecall, render_recalled
 from embodiment.perception import perceive
+from embodiment.persona_prompt import compose_base, english_tool_prompts, tool_prompt_language
+from embodiment.personas import BUILTIN_ID, Persona, PersonaStore, builtin_persona
 from embodiment.realtime import wire
 from embodiment.realtime.client import RealtimeConfig, RealtimeEars
-from embodiment.session import ASK_RECORD_TYPE, Session, default_ask_detector
+from embodiment.session import ASK_RECORD_TYPE, PERSONA_FIELD, Session, default_ask_detector
 from embodiment.tools import BOUND_REGISTRY_ATTR, ToolRegistry, bind_tools
 from embodiment.turn import FALLBACK_TEXT, SYSTEM_PROMPT, TurnConfig, TurnResult
 from embodiment.turn import turn as run_one_turn
@@ -882,6 +884,25 @@ APP_BARGE_IN_STOP_TIMEOUT = "app-barge-in-stop-timeout"
 APP_RECALL_FAILED = "app-recall-failed"
 #: A typed turn named an earlier conversation the history does not list (d5).
 APP_CONVERSATION_NOT_FOUND = "conversation-not-found"
+#: The conversation's persona is not in the store (deleted, or never there): the turn
+#: answers nothing of its own and says so (:data:`PERSONA_MISSING_TEXT`); a typed turn
+#: is refused before it writes anything. Never silently the built-in persona (t11).
+APP_PERSONA_MISSING = "app-persona-missing"
+#: A spoken reply was longer than the voice speaks: :func:`split_sentences` caps one
+#: reply at :data:`embodiment.voice.MAX_REPLY_CHARS` characters and ``MAX_SENTENCES``
+#: sentences, and the rest was never said. Recorded with counts only (t11: no persona's
+#: length setting lifts the cap, and the cut is not silent).
+APP_REPLY_TRUNCATED = "app-reply-truncated"
+#: The persona store degraded (an unreadable file, a dropped record): the store's
+#: own fixed reason token, never a persona's text.
+APP_PERSONAS_DEGRADED = "app-personas-degraded"
+#: The operator's personas, beside the other private state files (0600, personas.py).
+PERSONAS_FILENAME = "personas.json"
+#: What a turn says when its conversation's persona is gone: fixed text, no model call.
+PERSONA_MISSING_TEXT = "הפרסונה של השיחה הזאת נמחקה, ולכן אני לא עונה. בחרו פרסונה אחרת לשיחה."
+#: At most this many conversations keep a chosen persona in memory; the oldest is
+#: dropped first and read back from its transcript when it is continued.
+CONVERSATION_PERSONAS_KEPT = 256
 #: At most this many earlier conversations are kept open for continuing (d5); the
 #: least recently continued is dropped first and reopened from its log if needed.
 RESUMED_CONVERSATIONS = 8
@@ -1950,6 +1971,10 @@ class _VoiceTurn:
     handed: bool = False
     no_voice_recorded: bool = False
     rendered_ids: tuple[str, ...] = ()
+    #: The conversation's persona, snapshotted when the turn began (t11): a change
+    #: mid-turn applies to the next turn. ``persona`` is ``None`` when it is missing.
+    persona_id: str = BUILTIN_ID
+    persona: Optional[Persona] = builtin_persona()
 
 
 @dataclass(eq=False)
@@ -1980,6 +2005,9 @@ class _TextTurn:
     #: The conversation this turn belongs to: an earlier one it continues (d5), or
     #: ``None`` for the live session.
     conversation: Optional[str] = None
+    #: The persona snapshot taken when the turn began (t11); ``None`` when missing.
+    persona_id: str = BUILTIN_ID
+    persona: Optional[Persona] = builtin_persona()
 
 
 def _previous_page_sources(
@@ -2214,6 +2242,11 @@ class DaemonApp:
         self._text_turns_recent: deque[_TextTurn] = deque(maxlen=_TEXT_TURN_MEMORY)
         #: Earlier conversations reopened for continuing (d5), least recent first.
         self._resumed: OrderedDict[str, Any] = OrderedDict()
+        #: The operator's personas (t11) and each conversation's chosen persona id,
+        #: keyed by session id. A conversation not listed speaks as the built-in.
+        self._personas = PersonaStore(Path(self._state.dir) / PERSONAS_FILENAME)
+        self._personas_folded = 0
+        self._conversation_personas: OrderedDict[str, str] = OrderedDict()
         #: Gwen's typed replies built from library text, so a later typed turn whose
         #: window still carries one is guarded (review of PR #98, 2026-10-24).
         self._library_replies: deque[str] = deque(maxlen=_LIBRARY_REPLY_MEMORY)
@@ -3353,6 +3386,7 @@ class DaemonApp:
         session = self._ensure_session()
         if session is not None:
             self._note_ask(session, spoken_in)
+        persona_id, persona = self._session_persona(session)
 
         turn = _VoiceTurn(
             serial=serial,
@@ -3360,6 +3394,8 @@ class DaemonApp:
             query=spoken_in,
             window=self._window(session),
             clock=self._clock_line(),
+            persona_id=persona_id,
+            persona=persona,
         )
         with self._lock:
             self._voice_turn = turn
@@ -3380,6 +3416,9 @@ class DaemonApp:
                 self._turns_completed += 1
 
         final = turn.final_text or " ".join(outcome.spoken) or FALLBACK_TEXT
+        cut = _spoken_cut(final)
+        if cut is not None:
+            self._record(APP_REPLY_TRUNCATED, f"the voice speaks {cut[0]} of {cut[1]} characters")
         result = turn.result or TurnResult(spoken=final)
         result = replace(result, spoken=final, steps=max(result.steps, turn.steps))
         superseded = self._is_superseded(serial)
@@ -3407,6 +3446,7 @@ class DaemonApp:
                     metadata={
                         **timing.to_dict(),
                         "timestamps": stamps(stamp(STAMP_GENERATED, time.time())),
+                        PERSONA_FIELD: turn.persona_id,
                     },
                 ),
                 APP_TURN_FAILED,
@@ -3430,6 +3470,8 @@ class DaemonApp:
         clock: str,
         continuation: str = "",
         collector: Optional[Any] = None,
+        persona: Optional[Persona] = None,
+        path: str = "voice",
     ) -> tuple[TurnResult, bool]:
         """ONE completion through the turn path: (scrubbed result, whether a tool ran).
 
@@ -3440,15 +3482,20 @@ class DaemonApp:
         place recall enters a prompt; *continuation* is fixed text plus Gwen's
         own earlier sentences, never the user's words. *collector* — a typed turn's
         only (c39) — adds that turn's library tools to this completion.
+
+        *persona* (t11; ``None`` is the built-in) and *path* (``"voice"`` or
+        ``"typed"``) choose the base prompt and the tool prompts' language, and
+        nothing else: the tools, the write guard and the turn's config are the same.
         """
+        persona = persona if persona is not None else builtin_persona()
         complete, tools = self._turn_tools(collector)
         config = TurnConfig(
             role=self._config.role,
             system_prompt=_compose_prompt(
-                self._config.system_prompt,
+                self._persona_base(persona, path),
                 window,
                 memory,
-                tool_prompt=self._turn_tool_prompt(collector),
+                tool_prompt=self._turn_tool_prompt(collector, persona),
                 clock=clock,
                 continuation=continuation,
             ),
@@ -3469,10 +3516,20 @@ class DaemonApp:
         if turn is None or request.purpose == PURPOSE_FOLLOW_UP:
             return self._follow_up_text(request)
         first = turn.result is None
-        if not first and turn.tool_round:
+        if not first and (turn.tool_round or turn.persona is None):
             return _replay_after_tool_round(turn.first_text, request)
+        if turn.persona is None:
+            turn.result = self._persona_missing_result()
+            turn.first_text = turn.final_text = turn.result.spoken
+            turn.reply_text_at = self._clock()
+            return turn.result.spoken
         result, tooled = self._complete_turn(
-            turn.query, turn.window, request.memory, turn.clock, _continuation(request)
+            turn.query,
+            turn.window,
+            request.memory,
+            turn.clock,
+            _continuation(request),
+            persona=turn.persona,
         )
         turn.steps += result.steps
         turn.tool_round = turn.tool_round or tooled
@@ -3496,12 +3553,18 @@ class DaemonApp:
         it follows. An unusable completion is dropped by the unprompted seam —
         the never-silent rule does not apply to speech nobody asked for.
         """
+        with self._lock:
+            session = self._session
+        _, persona = self._session_persona(session)
+        if persona is None:
+            return ""  # the persona is gone: nothing unprompted is said for it
         result, _ = self._complete_turn(
             request.query,
             self._window_now(),
             request.memory,
             self._clock_line(),
             _continuation(request),
+            persona=persona,
         )
         return "" if _fell_back(result) else result.spoken
 
@@ -3618,7 +3681,9 @@ class DaemonApp:
         session = getattr(self._tls, "conversation_session", None) or self._ensure_session()
         if session is None:
             return None
-        return _LockedSession(session, self._conversation, self._conversation_bound())
+        return _LockedSession(
+            session, self._conversation, self._conversation_bound(), self._typed_persona_id
+        )
 
     def _conversation_bound(self) -> float:
         """How long a typed turn waits for the conversation: one completion deadline."""
@@ -3668,6 +3733,7 @@ class DaemonApp:
             session = resumed or self._session
             conversation = getattr(resumed, "session_id", None)
             previous = _previous_page_sources(self._text_turns_recent, conversation)
+        persona_id, persona = self._session_persona(session)
         turn = _TextTurn(
             serial=serial,
             thread=threading.get_ident(),
@@ -3683,6 +3749,8 @@ class DaemonApp:
             ),
             previous_sources=previous,
             conversation=conversation,
+            persona_id=persona_id,
+            persona=persona,
         )
         self._arm_library_guard(turn)
         self._tls.text_turn = turn
@@ -3716,8 +3784,12 @@ class DaemonApp:
         if turn is None:
             return ""
         first = turn.result is None
-        if not first and turn.tool_round:
+        if not first and (turn.tool_round or turn.persona is None):
             return _replay_after_tool_round(turn.first_text, request)
+        if turn.persona is None:
+            turn.result = self._persona_missing_result()
+            turn.first_text = turn.final_text = turn.result.spoken
+            return turn.result.spoken
         result, tooled = self._complete_turn(
             turn.query,
             turn.window,
@@ -3725,6 +3797,8 @@ class DaemonApp:
             turn.clock,
             _continuation(request),
             collector=turn.collector,
+            persona=turn.persona,
+            path="typed",
         )
         turn.tool_round = turn.tool_round or tooled
         if first:
@@ -3744,8 +3818,16 @@ class DaemonApp:
             self._record(APP_TEXT_FOLLOW_UP_UNROUTED, "no recent typed turn matched", source="text")
             return ""
         self._tls.follow_up_turn = None
+        if turn.persona is None:
+            return ""  # the persona is gone: nothing unprompted is said for it
         result, _ = self._complete_turn(
-            request.query, turn.window, request.memory, self._clock_line(), _continuation(request)
+            request.query,
+            turn.window,
+            request.memory,
+            self._clock_line(),
+            _continuation(request),
+            persona=turn.persona,
+            path="typed",
         )
         if _fell_back(result):
             return ""
@@ -3796,7 +3878,10 @@ class DaemonApp:
         """
         self._tls.text_turn = None
         refused = self._enter_conversation(conversation)
+        if refused is None:
+            refused = self._refuse_missing_persona()
         if refused is not None:
+            self._tls.conversation_session = None
             return refused
         try:
             result = self._text_turns.handle_text(message)
@@ -3911,25 +3996,190 @@ class DaemonApp:
             ((t["role"], t["text"]) for t in found["turns"]),
             last_turn_at=max(stamps_) if stamps_ else None,
         )
+        logged = _logged_persona(getattr(session.transcript, "path", None))
         with self._lock:
+            if conversation not in self._conversation_personas:
+                self._keep_persona(conversation, logged or BUILTIN_ID)
+            session.persona_id = self._conversation_personas[conversation]
             self._resumed[conversation] = session
             while len(self._resumed) > RESUMED_CONVERSATIONS:
                 self._resumed.popitem(last=False)
         return session
 
+    # ── personas (t11): the conversation's persona, snapshotted per turn ────
+
+    @property
+    def personas(self) -> PersonaStore:
+        """The operator's persona store (``<state>/personas.json``, 0600)."""
+        return self._personas
+
+    def conversation_persona_id(self, conversation: Optional[str] = None) -> str:
+        """The persona id *conversation* speaks as (``None``: the live one).
+
+        The built-in's id for a conversation nobody chose one for. An earlier
+        conversation is reopened (d5), which reads its persona back from its
+        transcript. The id is returned even when that persona was since deleted:
+        :meth:`conversation_persona` says whether it still exists.
+        """
+        if conversation is None:
+            with self._lock:
+                session = self._session
+        else:
+            session = self._session_for(conversation)
+        if session is None:
+            return BUILTIN_ID
+        return self._session_persona_id(session)
+
+    def conversation_persona(self, conversation: Optional[str] = None) -> Optional[Persona]:
+        """The persona *conversation* speaks as, or ``None`` when it is missing."""
+        persona = self._personas.get(self.conversation_persona_id(conversation))
+        self._fold_personas()
+        return persona
+
+    def set_conversation_persona(
+        self, persona_id: str, conversation: Optional[str] = None
+    ) -> Optional[Persona]:
+        """Make *conversation* (``None``: the live one) speak as *persona_id*.
+
+        Returns the persona, or ``None`` when there is no such persona or no such
+        conversation (nothing changes then). A turn already running keeps the
+        persona it started with; the next turn takes this one.
+        """
+        persona = self._personas.get(persona_id) if isinstance(persona_id, str) else None
+        self._fold_personas()
+        if persona is None:
+            return None
+        if conversation is None:
+            session = self._ensure_session()
+        else:
+            session = self._session_for(conversation)
+        if session is None:
+            return None
+        key = self._persona_key(conversation, session)
+        with self._lock:
+            self._keep_persona(key, persona.id)
+        if isinstance(session, Session):
+            session.persona_id = persona.id
+        return persona
+
+    def _session_for(self, conversation: str) -> Optional[Any]:
+        """The live session when *conversation* is its id, else the reopened one."""
+        live = self._current_session_log()
+        if live is not None and live.stem == conversation:
+            with self._lock:
+                return self._session
+        return self._resumed_session(conversation)
+
+    def _persona_key(self, conversation: Optional[str], session: Any = None) -> Optional[str]:
+        """The map key: the conversation's id, or the live session's (``""`` for a
+        session without one); ``None`` while no live session exists."""
+        if conversation:
+            return conversation
+        if session is None:
+            with self._lock:
+                session = self._session
+        if session is None:
+            return None
+        sid = getattr(session, "session_id", None)
+        return sid if isinstance(sid, str) else ""
+
+    def _keep_persona(self, key: str, persona_id: str) -> None:
+        """Record *key*'s persona, bounded. Caller holds ``self._lock``."""
+        self._conversation_personas[key] = persona_id
+        self._conversation_personas.move_to_end(key)
+        while len(self._conversation_personas) > CONVERSATION_PERSONAS_KEPT:
+            self._conversation_personas.popitem(last=False)
+
+    def _session_persona_id(self, session: Any) -> str:
+        """*session*'s persona id: the one chosen for it, else the one it carries
+        (read back from its log on continue), else the built-in's."""
+        if session is None:
+            return BUILTIN_ID
+        key = self._persona_key(None, session)
+        with self._lock:
+            chosen = self._conversation_personas.get(key) if key is not None else None
+        if chosen is not None:
+            return chosen
+        carried = getattr(session, "persona_id", None) if isinstance(session, Session) else None
+        return carried if isinstance(carried, str) and carried else BUILTIN_ID
+
+    def _session_persona(self, session: Any) -> tuple[str, Optional[Persona]]:
+        """The persona snapshot for a turn in *session*: (id, persona or ``None``)."""
+        persona_id = self._session_persona_id(session)
+        persona = self._personas.get(persona_id)
+        self._fold_personas()
+        if isinstance(session, Session) and session.persona_id is None:
+            session.persona_id = persona_id
+        return persona_id, persona
+
+    def _typed_persona_id(self) -> Optional[str]:
+        """The running typed turn's persona snapshot, for its assistant record."""
+        turn = getattr(self._tls, "text_turn", None)
+        return turn.persona_id if turn is not None else None
+
+    def _persona_base(self, persona: Persona, path: str) -> str:
+        """The base prompt: :func:`compose_base`, unless the built-in runs under a
+        configured base prompt other than the shipped one, which stands as given."""
+        if persona.builtin and self._config.system_prompt != SYSTEM_PROMPT:
+            return self._config.system_prompt
+        return compose_base(persona, path)
+
+    def _persona_missing_result(self) -> TurnResult:
+        """The turn's answer when its persona is gone: recorded, fixed, no model call."""
+        self._record(
+            APP_PERSONA_MISSING, "the conversation's persona is missing; the turn answered nothing"
+        )
+        return TurnResult(spoken=PERSONA_MISSING_TEXT, exit_reason=APP_PERSONA_MISSING)
+
+    def _refuse_missing_persona(self) -> Optional[dict[str, Any]]:
+        """A typed turn's refusal, before it writes anything, when its persona is gone."""
+        session = getattr(self._tls, "conversation_session", None)
+        if session is None:
+            with self._lock:
+                session = self._session
+        _, persona = self._session_persona(session)
+        if persona is not None:
+            return None
+        self._record(
+            APP_PERSONA_MISSING, "the conversation's persona is missing; the turn was refused"
+        )
+        return {
+            "ok": False,
+            "reply": PERSONA_MISSING_TEXT,
+            "sources": [],
+            "turn_serial": None,
+            "code": APP_PERSONA_MISSING,
+            "http_status": 409,
+        }
+
+    def _fold_personas(self) -> None:
+        """Record every persona-store degradation not yet recorded (its fixed token)."""
+        reasons = list(self._personas.degradations)
+        with self._lock:
+            start, self._personas_folded = self._personas_folded, len(reasons)
+        for reason in reasons[start:]:
+            self._record(APP_PERSONAS_DEGRADED, reason)
+
     # ── the library lane (t13): typed-turn tools, the write guard, the routes ──
 
-    def _turn_tool_prompt(self, collector: Optional[Any]) -> str:
+    def _turn_tool_prompt(self, collector: Optional[Any], persona: Optional[Persona] = None) -> str:
         """The fixed tool lines for ONE completion: remember/forget, plus the library
-        line only when this turn carries a library collector (d1)."""
-        base = REMEMBER_TOOL_PROMPT if self._config.remember_tool else ""
+        line only when this turn carries a library collector (d1).
+
+        In the persona's prompt language (t11): the Hebrew constants here for
+        ``"he"`` (the built-in's, byte for byte), else :func:`english_tool_prompts`.
+        """
+        prompts = _tool_prompts(persona if persona is not None else builtin_persona())
+        base = prompts["REMEMBER"] if self._config.remember_tool else ""
         if collector is not None and self._conversations is not None and self._seam is not None:
-            base = f"{base}\n{CONVERSATIONS_TOOL_PROMPT}" if base else CONVERSATIONS_TOOL_PROMPT
+            conv = prompts["CONVERSATIONS"]
+            base = f"{base}\n{conv}" if base else conv
         if collector is not None and self._todos_available() and self._seam is not None:
-            base = f"{base}\n{TODOS_TOOL_PROMPT}" if base else TODOS_TOOL_PROMPT
+            todos = prompts["TODOS"]
+            base = f"{base}\n{todos}" if base else todos
         if collector is None or self._library is None or self._seam is None:
             return base
-        library = LIBRARY_TOOL_PROMPT
+        library = prompts["LIBRARY"]
         turn = self._text_turn_here()
         previous = previous_sources_line(turn.previous_sources) if turn is not None else ""
         if previous:
@@ -6428,6 +6678,57 @@ def _compose_prompt(
     return "\n\n".join(parts)
 
 
+def _tool_prompts(persona: Persona) -> dict[str, str]:
+    """The four tool prompts in *persona*'s prompt language (t11).
+
+    Hebrew is this module's own constants, so the built-in persona's tool text is
+    byte-identical to before; English is :func:`english_tool_prompts`.
+    """
+    if tool_prompt_language(persona) == "he":
+        return {
+            "REMEMBER": REMEMBER_TOOL_PROMPT,
+            "LIBRARY": LIBRARY_TOOL_PROMPT,
+            "CONVERSATIONS": CONVERSATIONS_TOOL_PROMPT,
+            "TODOS": TODOS_TOOL_PROMPT,
+        }
+    return english_tool_prompts(persona)
+
+
+def _spoken_cut(text: str) -> Optional[tuple[int, int]]:
+    """``(characters spoken, characters in the reply)`` when the voice's caps cut
+    *text*, else ``None``. The voice turn splits with :func:`split_sentences`'
+    defaults; the same split with no caps says what the caps dropped."""
+    stripped = text.strip()
+    capped = split_sentences(stripped)
+    whole = split_sentences(stripped, max_reply_chars=len(stripped), max_sentences=len(stripped))
+    said, total = sum(map(len, capped)), sum(map(len, whole))
+    return (said, total) if said < total else None
+
+
+def _logged_persona(path: Any) -> Optional[str]:
+    """The persona id of the newest assistant record in a transcript log, or None.
+
+    How a continued conversation gets its persona back (d5, t11). An unreadable
+    log, or one written before personas, names none — the caller's default holds.
+    """
+    if not path:
+        return None
+    try:
+        lines = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("role") == "assistant":
+            value = row.get(PERSONA_FIELD)
+            if isinstance(value, str) and value:
+                return value
+    return None
+
+
 def _no_playback() -> None:
     """A typed turn's ``stop_playback``: there is no speaker to stop."""
 
@@ -6505,10 +6806,18 @@ class _LockedSession:
     records as a session failure.
     """
 
-    def __init__(self, session: Any, lock: Any, timeout: float) -> None:
+    def __init__(
+        self,
+        session: Any,
+        lock: Any,
+        timeout: float,
+        persona_id: Optional[Callable[[], Optional[str]]] = None,
+    ) -> None:
         self._session = session
         self._lock = lock
         self._timeout = timeout
+        #: The typed turn's persona snapshot (t11), stamped on its assistant record.
+        self._persona_id = persona_id
 
     def _write(self, call: Callable[[], Any]) -> Any:
         if not self._lock.acquire(timeout=self._timeout):
@@ -6522,6 +6831,9 @@ class _LockedSession:
         return self._write(lambda: self._session.add_user(text, metadata=metadata))
 
     def add_assistant(self, text: str, metadata: Any = None) -> Any:
+        persona_id = self._persona_id() if self._persona_id is not None else None
+        if persona_id is not None and PERSONA_FIELD not in (metadata or {}):
+            metadata = {**dict(metadata or {}), PERSONA_FIELD: persona_id}
         return self._write(lambda: self._session.add_assistant(text, metadata=metadata))
 
     def __getattr__(self, name: str) -> Any:
