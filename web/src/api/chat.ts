@@ -93,6 +93,8 @@ export async function sendChat(
   options: ChatClientOptions = {},
   conversation?: string,
   settings: ConversationSettings = {},
+  /** Names this request so its answer can be fetched later (GET /api/chat/{id}). */
+  requestId?: string,
 ): Promise<ChatOutcome> {
   const fetchFn = options.fetchFn ?? fetch;
   const basePath = options.basePath ?? "/api";
@@ -104,7 +106,12 @@ export async function sendChat(
       method: "POST",
       headers,
       // With a conversation id the turn continues that earlier conversation (d5).
-      body: JSON.stringify({ message, ...(conversation ? { conversation } : {}), ...settingsBody(settings) }),
+      body: JSON.stringify({
+        message,
+        ...(conversation ? { conversation } : {}),
+        ...settingsBody(settings),
+        ...(requestId ? { request_id: requestId } : {}),
+      }),
     });
   } catch {
     return { ok: false, code: "network-error" };
@@ -129,16 +136,70 @@ export async function sendChat(
   }
   const result =
     obj && typeof obj.result === "object" && obj.result ? (obj.result as Record<string, unknown>) : obj;
-  if (!result || typeof result.reply !== "string") {
-    return { ok: false, code: "unparseable-response" };
-  }
+  const value = parseReply(result);
+  return value ? { ok: true, value } : { ok: false, code: "unparseable-response" };
+}
+
+function parseReply(result: Record<string, unknown> | null): ChatReply | null {
+  if (!result || typeof result.reply !== "string") return null;
   return {
-    ok: true,
-    value: {
-      reply: result.reply,
-      sources: parseSources(result.sources),
-      turnSerial: num(result.turn_serial),
-      fallback: typeof result.fallback === "string" && result.fallback ? result.fallback : null,
-    },
+    reply: result.reply,
+    sources: parseSources(result.sources),
+    turnSerial: num(result.turn_serial),
+    fallback: typeof result.fallback === "string" && result.fallback ? result.fallback : null,
   };
+}
+
+/** The code the daemon answers when the chat route's own clock ran out; the turn runs on. */
+export const CHAT_TIMEOUT_CODE = "http-control-timeout";
+
+/** A fresh request id: a token the daemon accepts (8-64 of letters, digits, _ or -). */
+export function newRequestId(): string {
+  const raw =
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+  return `req-${raw.replace(/[^A-Za-z0-9]/g, "")}`.slice(0, 64);
+}
+
+export type ChatResultOutcome =
+  | { state: "pending" }
+  /** Never sent, dropped by the daemon's bound, or lost to a restart. */
+  | { state: "unknown" }
+  /** The turn finished: its answer, or the turn's own refusal code. */
+  | { state: "done"; outcome: ChatOutcome }
+  /** This poll failed (network, auth, shape); the request may still be running. */
+  | { state: "error"; code: string };
+
+/** GET /api/chat/{id}: an answer that outlived its request. Never throws. */
+export async function fetchChatResult(
+  requestId: string,
+  secret: string,
+  options: ChatClientOptions = {},
+): Promise<ChatResultOutcome> {
+  const fetchFn = options.fetchFn ?? fetch;
+  const headers: Record<string, string> = {};
+  if (secret) headers.Authorization = `Bearer ${secret}`;
+  let body: unknown;
+  try {
+    const response = await fetchFn(`${options.basePath ?? "/api"}/chat/${encodeURIComponent(requestId)}`, {
+      headers,
+    });
+    if (!response.ok) return { state: "error", code: `http-${response.status}` };
+    body = await response.json();
+  } catch {
+    return { state: "error", code: "network-error" };
+  }
+  const obj = body && typeof body === "object" ? (body as Record<string, unknown>) : null;
+  if (obj?.state === "pending") return { state: "pending" };
+  if (obj?.state === "unknown") return { state: "unknown" };
+  if (obj?.state !== "done" || !obj.result || typeof obj.result !== "object") {
+    return { state: "error", code: "unparseable-response" };
+  }
+  const result = obj.result as Record<string, unknown>;
+  if (result.ok !== true) {
+    return { state: "done", outcome: { ok: false, code: typeof result.code === "string" && result.code ? result.code : "text-refused" } };
+  }
+  const value = parseReply(result);
+  return { state: "done", outcome: value ? { ok: true, value } : { ok: false, code: "unparseable-response" } };
 }

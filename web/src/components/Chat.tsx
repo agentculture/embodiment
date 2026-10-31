@@ -7,12 +7,17 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { EventEnvelope } from "../api/events";
 import {
+  CHAT_TIMEOUT_CODE,
+  fetchChatResult,
   formatMmSs,
+  newRequestId,
   parseSources,
   sendChat,
   type ChatClientOptions,
+  type ChatOutcome,
   type ChatSource,
 } from "../api/chat";
+import { addPending, loadPending, removePending, type PendingChat } from "../api/pendingChats";
 import type { ConversationSettings } from "../api/models";
 import { stripCitations, splitCitations } from "../api/citations";
 import { parseBlocks, type Inline, type ListBlock } from "./markdown";
@@ -48,6 +53,8 @@ export interface ChatProps {
   settings?: ConversationSettings;
   /** The settings row under the dock. `unavailable` names the role that could not answer, else null. */
   meta?: (state: ChatMetaState) => ReactNode;
+  /** How often a still-running answer is asked for (GET /api/chat/{id}). */
+  pollMs?: number;
 }
 
 export interface ChatMetaState {
@@ -90,6 +97,19 @@ interface Message {
   fallback?: string | null;
   /** Reveal word by word (a fresh answer, motion allowed). */
   reveal?: boolean;
+  /** Still running past the request's own clock: the request id it is fetched by. */
+  waiting?: string;
+  /** A note in place of an answer (the turn refused, or the answer was lost). */
+  note?: string;
+}
+
+/** The chat this pending question belongs to: its conversation, or the live one. */
+const sameConversation = (p: PendingChat, conversation: string | undefined) =>
+  p.conversation === (conversation ?? null);
+
+/** True when the history already holds *question* followed by an answer. */
+function answeredIn(turns: { role: string; text: string }[], question: string): boolean {
+  return turns.some((t, i) => t.role === "user" && t.text === question && turns[i + 1]?.role === "assistant");
 }
 
 /**
@@ -372,11 +392,27 @@ export function Chat({
   onReadAloud,
   settings,
   meta,
+  pollMs = 3000,
 }: ChatProps) {
   const [draft, setDraft] = useState("");
-  const [messages, setMessages] = useState<Message[]>(() =>
-    (initialTurns ?? []).map((t, i) => ({ key: `h-${i}`, role: t.role, text: t.text, sources: [] })),
-  );
+  const [messages, setMessages] = useState<Message[]>(() => {
+    const history: Message[] = (initialTurns ?? []).map((t, i) => ({ key: `h-${i}`, role: t.role, text: t.text, sources: [] }));
+    // Questions asked here whose answers never reached the page (it was left, or the
+    // route's clock ran out): shown again and fetched, unless the history holds them.
+    const recovered: Message[] = [];
+    for (const p of loadPending()) {
+      if (!sameConversation(p, conversation)) continue;
+      if (answeredIn(initialTurns ?? [], p.question)) {
+        removePending(p.id);
+        continue;
+      }
+      recovered.push(
+        { key: `r-q-${p.id}`, role: "user", text: p.question, sources: [] },
+        { key: `w-${p.id}`, role: "assistant", text: "", sources: [], waiting: p.id },
+      );
+    }
+    return [...history, ...recovered];
+  });
   const [degraded, setDegraded] = useState<string | null>(null);
   // The role a model-unavailable refusal named; the Model control is amber only while it is still chosen.
   const [unavailableRole, setUnavailableRole] = useState<string | null>(null);
@@ -413,6 +449,51 @@ export function Chat({
     end.current?.scrollIntoView?.({ block: "end", behavior: calmMotion() ? "auto" : "smooth" });
   }, [messages.length, pending]);
 
+  // Read through refs: a parent re-rendering with a new options object must not restart polling.
+  const access = useRef({ secret, clientOptions });
+  access.current = { secret, clientOptions };
+  const waitingIds = messages.flatMap((m) => (m.waiting ? [m.waiting] : [])).join(" ");
+  useEffect(() => {
+    if (!waitingIds) return;
+    let stopped = false;
+    const settle = (id: string, outcome: ChatOutcome | null) => {
+      removePending(id);
+      setMessages((m) =>
+        m.map((msg): Message => {
+          if (msg.waiting !== id) return msg;
+          if (outcome === null) {
+            return { ...msg, waiting: undefined, note: "This answer was lost when Gwen restarted. Ask again, or look for it in this conversation's history." };
+          }
+          if (!outcome.ok) return { ...msg, waiting: undefined, note: `Gwen could not answer (${outcome.code}).` };
+          if (outcome.value.turnSerial !== null) typedSerials.current.add(outcome.value.turnSerial);
+          return {
+            ...msg,
+            waiting: undefined,
+            text: outcome.value.reply,
+            sources: outcome.value.sources,
+            fallback: outcome.value.fallback,
+            reveal: !calmMotion(),
+          };
+        }),
+      );
+    };
+    const poll = async () => {
+      for (const id of waitingIds.split(" ")) {
+        const got = await fetchChatResult(id, access.current.secret, access.current.clientOptions);
+        if (stopped) return;
+        if (got.state === "done") settle(id, got.outcome);
+        else if (got.state === "unknown") settle(id, null);
+        // pending, or this poll failed: ask again next tick
+      }
+    };
+    const timer = setInterval(() => void poll(), pollMs);
+    void poll();
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [waitingIds, pollMs]);
+
   async function ask(raw: string) {
     const text = raw.trim();
     if (!text || busy) return;
@@ -422,7 +503,18 @@ export function Chat({
     setPending(text);
     baselineSeq.current = replyEvents.reduce((mx, e) => Math.max(mx, e.seq), 0);
     setMessages((m) => [...m, { key: `u-${m.length}`, role: "user", text, sources: [] }]);
-    const outcome = await sendChat(text, secret, clientOptions, conversation, settings);
+    const requestId = newRequestId();
+    addPending({ id: requestId, question: text, conversation: conversation ?? null, at: Date.now() });
+    const outcome = await sendChat(text, secret, clientOptions, conversation, settings, requestId);
+    if (!outcome.ok && outcome.code === CHAT_TIMEOUT_CODE) {
+      // The turn runs on past the route's clock: wait for its answer, never call it failed.
+      setDegraded(null);
+      setMessages((m) => [...m, { key: `w-${requestId}`, role: "assistant", text: "", sources: [], waiting: requestId }]);
+      setPending(null);
+      setBusy(false);
+      return;
+    }
+    removePending(requestId);
     if (outcome.ok) {
       setDegraded(null);
       setUnavailableRole(null);
@@ -497,6 +589,16 @@ export function Chat({
               data-follow-up={m.followUp ? "true" : undefined}
             >
               <span className="sr-only">assistant: </span>
+              {m.waiting ? (
+                <p className="answer answer--pending answer--waiting" role="status">
+                  Still working on this. The answer will appear here, even if you leave and come back.
+                </p>
+              ) : m.note ? (
+                <p className="answer-fallback" role="note">
+                  {m.note}
+                </p>
+              ) : (
+              <>
               <div className="answer" dir="auto">
                 <Answer text={m.text} sources={m.sources} reveal={!!m.reveal} onOpen={onOpenCitation} />
               </div>
@@ -516,6 +618,8 @@ export function Chat({
               <Sources sources={m.sources} onOpen={onOpenCitation} />
               {onReadAloud && readableSource(m.sources) && (
                 <ReadCard source={readableSource(m.sources) as ChatSource} onRead={onReadAloud} />
+              )}
+              </>
               )}
             </li>
           ),

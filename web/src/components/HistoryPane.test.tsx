@@ -108,7 +108,9 @@ describe("PastConversation (continued, deviation d5)", () => {
     await userEvent.click(screen.getByRole("button", { name: "Send" }));
     expect(await screen.findByText("כחולה")).toBeInTheDocument();
     const chat = calls.find((c) => c.url.endsWith("/chat"));
-    expect(JSON.parse(chat!.body)).toEqual({ message: "ומה צבע הדלת?", conversation: "old" });
+    expect(JSON.parse(chat!.body)).toEqual({
+      message: "ומה צבע הדלת?", conversation: "old", request_id: expect.stringMatching(/^req-/),
+    });
     await userEvent.click(screen.getByRole("button", { name: "Back to now" }));
     expect(onBack).toHaveBeenCalled();
   });

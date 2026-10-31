@@ -278,6 +278,7 @@ describe("Chat: settings and the model-unavailable state (gwen-pm t16)", () => {
     await screen.findByText("ok");
     expect(JSON.parse(String(fetchFn.mock.calls[0][1]?.body))).toEqual({
       message: "hi", persona: "p1", model: "worker", language: "none",
+      request_id: expect.stringMatching(/^req-[A-Za-z0-9]+$/),
     });
   });
 

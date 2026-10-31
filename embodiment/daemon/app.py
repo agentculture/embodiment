@@ -987,6 +987,20 @@ CONVERSATION_PERSONAS_KEPT = 256
 #: another role. DISTINCT from the gateway-down path, which keeps
 #: :data:`embodiment.turn.DEGRADED_SEAM_ABORTED` and the never-silent fallback line.
 APP_TEXT_MODEL_UNAVAILABLE = "app-text-model-unavailable"
+#: Typed results kept for ``GET /api/chat/{request_id}`` (operator, 2026-10-31: an answer
+#: outlives its HTTP request and is recoverable after the page was left). Count-bounded,
+#: oldest dropped first; in memory, so a restart forgets them (the log keeps the turn).
+MAX_CHAT_RESULTS = 128
+#: The page's request id: a token, never a path or free text.
+CHAT_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}\Z")
+
+
+def _valid_request_id(value: Any) -> bool:
+    return isinstance(value, str) and CHAT_REQUEST_ID_RE.match(value) is not None
+
+
+#: The fields of a typed result the store keeps and serves (http_status stays internal).
+CHAT_RESULT_FIELDS = ("ok", "reply", "sources", "turn_serial", "code", "fallback")
 #: A spoken turn on a role whose voice latency is not measured (or still probing):
 #: no completion was asked of it, and the fixed notice was spoken instead.
 APP_VOICE_ROLE_GATED = "app-voice-role-gated"
@@ -2688,6 +2702,7 @@ class DaemonApp:
         self._floor_taken = False
         self._recall_seen: "OrderedDict[str, _RecallSeen]" = OrderedDict()
         self._text_turns_recent: deque[_TextTurn] = deque(maxlen=_TEXT_TURN_MEMORY)
+        self._chat_results: "OrderedDict[str, Optional[dict[str, Any]]]" = OrderedDict()
         #: Earlier conversations reopened for continuing (d5), least recent first.
         self._resumed: OrderedDict[str, Any] = OrderedDict()
         #: The operator's personas (t11) and each conversation's chosen persona id,
@@ -4358,6 +4373,9 @@ class DaemonApp:
         # response, and Chat.tsx appends every serial'd reply as a NEW message.
         if turn.fallback:
             labels = {**labels, "fallback": turn.fallback}
+        request_id = getattr(self._tls, "chat_request_id", None)
+        if request_id:
+            labels = {**labels, "request_id": request_id}
         self._publish("reply", {"text": reply, "typed": True, **labels})
         return reply
 
@@ -4465,12 +4483,49 @@ class DaemonApp:
             },
         )
 
-    def _control_chat(self, message: Any, conversation: Optional[str] = None) -> dict[str, Any]:
+    def _control_chat(
+        self, message: Any, conversation: Optional[str] = None, request_id: Any = None
+    ) -> dict[str, Any]:
         """``Controls.chat``: one typed turn, its reply, its sources and its serial.
 
         With *conversation*, the turn continues that earlier conversation (d5): its
         turns are the window and the new ones go to its log, as if it never stopped.
+        With a well-formed *request_id* the result is also kept, pending then done, for
+        :meth:`_control_chat_result`: it outlives the route's own clock and the page.
         """
+        rid = request_id if _valid_request_id(request_id) else None
+        if rid is not None:
+            self._keep_chat_result(rid, None)
+        self._tls.chat_request_id = rid
+        try:
+            result = self._chat_outcome(message, conversation)
+        finally:
+            self._tls.chat_request_id = None
+        if rid is not None:
+            self._keep_chat_result(rid, {k: result.get(k) for k in CHAT_RESULT_FIELDS})
+        return result
+
+    def _keep_chat_result(self, rid: str, result: Optional[dict[str, Any]]) -> None:
+        with self._lock:
+            self._chat_results.pop(rid, None)
+            self._chat_results[rid] = result
+            while len(self._chat_results) > MAX_CHAT_RESULTS:
+                self._chat_results.popitem(last=False)
+
+    def _control_chat_result(self, request_id: Any) -> dict[str, Any]:
+        """``GET /api/chat/{request_id}``: ``pending``, ``done`` with the result, or
+        ``unknown`` (never sent, malformed, dropped by the bound, or before a restart)."""
+        if not _valid_request_id(request_id):
+            return {"state": "unknown", "result": None}
+        with self._lock:
+            if request_id not in self._chat_results:
+                return {"state": "unknown", "result": None}
+            result = self._chat_results[request_id]
+        if result is None:
+            return {"state": "pending", "result": None}
+        return {"state": "done", "result": dict(result)}
+
+    def _chat_outcome(self, message: Any, conversation: Optional[str]) -> dict[str, Any]:
         self._tls.text_turn = None
         refused = self._enter_conversation(conversation)
         if refused is None:
@@ -8005,6 +8060,7 @@ class DaemonApp:
             set_mute=self._control_set_mute,
             status=self.status,
             chat=self._control_chat,
+            chat_result=self._control_chat_result,
             speak=self._control_speak,
             clip=self._control_clip,
             # Unbound without a library: the routes answer 503 library-not-configured.

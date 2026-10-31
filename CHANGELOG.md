@@ -14,6 +14,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A distinct model-unavailable error (app-text-model-unavailable) with no fallback to another model, and a one-tap switch.
 - Voice gated by measured latency: senses is exempt; any other role speaks only after a background probe measures it (voice-latency.json).
 - The Gemma translator (translate_via): the chosen model sees English, the operator hears the persona's language, and remember and searches keep the operator's own words.
+- A typed answer outlives its request: the page names each chat with a request_id; the daemon keeps the result (pending, then done; 128 kept, in memory) at GET /api/chat/{request_id} and tags the reply event with it. On http-control-timeout the page shows 'Still working on this' and fetches the answer when the turn ends; a question asked before the page was left is recovered on the next visit (localStorage keeps only the id, question and conversation).
 - spark-gwen on the Culture mesh: Gwen's daemon holds its own agentirc connection (EMBODIMENT_MESH on by default); ask_culture posts only the question, as its own thread; answers arrive later (also after expiry, marked); agents that contact her get a normal turn; mesh events, cards and status counters; embodiment mesh prints the setup.
 
 ### Changed
@@ -24,6 +25,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - A failing capabilities degrade hook is counted instead of silently swallowed.
+- Saving a persona no longer reports 'Could not save (unparseable-response)': the page reads the daemon's {persona: ...} reply.
+- An agent conversation's row in the history pane lays out nick, title and time instead of overlapping.
 
 ## [0.23.5] - 2026-10-31
 

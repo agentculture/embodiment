@@ -480,6 +480,10 @@ STREAM_ROUTE = "/api/events"
 STATUS_ROUTE = "/api/status"
 
 CHAT_ROUTE = "/api/chat"
+#: The page's chat request id (mirrors the daemon's ``CHAT_REQUEST_ID_RE``).
+_CHAT_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}\Z")
+_CHAT_RESULT_STATES = ("pending", "done", "unknown")
+CHAT_RESULTS_NOT_CONFIGURED_CODE = "chat-results-not-configured"
 SPEAK_ROUTE = "/api/speak"
 #: Set on a /api/speak answer whose audio stopped short of the text (a cap or a deadline).
 SPEAK_TRUNCATED_HEADER = "X-Speak-Truncated"
@@ -630,6 +634,9 @@ class Controls:
     #: refuses a non-string). Runs under :attr:`ServerConfig.chat_timeout_s`. A second
     #: argument, only when the body names one, is the conversation id it continues.
     chat: Optional[Callable[..., dict[str, Any]]] = None
+    #: ``chat_result(request_id) -> {"state": "pending"|"done"|"unknown", "result"}``:
+    #: ``GET /api/chat/{request_id}``, a typed answer that outlived its request.
+    chat_result: Optional[Callable[[Any], dict[str, Any]]] = None
     #: ``speak(text) -> {"ok", "audio": bytes, "content_type", "code", "http_status"}``.
     #: Runs under :attr:`ServerConfig.speak_timeout_s`.
     speak: Optional[Callable[[Any], dict[str, Any]]] = None
@@ -890,6 +897,9 @@ class _Handler(BaseHTTPRequestHandler):
             return True
         if route == MODELS_ROUTE:
             self._models_route(method)
+            return True
+        if route.startswith(CHAT_ROUTE + "/"):
+            self._chat_result_route(route[len(CHAT_ROUTE) + 1 :], method)
             return True
         if route in _CONTROL_ROUTES:
             if method != "POST":
@@ -1569,6 +1579,33 @@ class _Handler(BaseHTTPRequestHandler):
         )
         self._answer_text(outcome, ("transcript", "reply"), serial=True, sources=True)
 
+    def _chat_result_route(self, request_id: str, method: str) -> None:
+        """``GET /api/chat/{request_id}``: a typed answer that outlived its request."""
+        if method != "GET":
+            self._refuse_unread(405, "http-method-not-allowed", "a chat result is GET only")
+            return
+        if not _CHAT_REQUEST_ID_RE.match(request_id):
+            self._refuse_unread(404, "http-unknown-route", "no such API route")
+            return
+        app = self._app
+        action = app.controls.chat_result
+        if action is None:
+            app._degrade(CHAT_RESULTS_NOT_CONFIGURED_CODE, "api.chat.result is not configured")
+            self._send_error(503, CHAT_RESULTS_NOT_CONFIGURED_CODE, "not configured here")
+            return
+        outcome = app.call_text(
+            "api.chat.result", action, request_id, timeout_s=app.config.control_timeout_s
+        )
+        if not outcome.ok:
+            self._send_error(outcome.status, outcome.code, outcome.message)
+            return
+        result = outcome.result
+        if not isinstance(result, dict) or result.get("state") not in _CHAT_RESULT_STATES:
+            app._degrade(LIBRARY_BAD_SHAPE_CODE, "api.chat.result answered a bad shape")
+            self._send_error(502, LIBRARY_BAD_SHAPE_CODE, MALFORMED_MESSAGE)
+            return
+        self._send_json(200, result)
+
     def _chat_route(self, payload: dict[str, Any], value: Any) -> None:
         app = self._app
         # An optional "conversation" continues an earlier conversation (d5); without
@@ -1579,9 +1616,18 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_error(400, BAD_REQUEST_CODE, "persona, model and language are strings")
             return
         continued = conversation if isinstance(conversation, str) and conversation else None
+        request_id = payload.get("request_id")
+        if request_id is not None and not (
+            isinstance(request_id, str) and _CHAT_REQUEST_ID_RE.match(request_id)
+        ):
+            self._send_error(400, BAD_REQUEST_CODE, "request_id is a short token")
+            return
         if settings and not self._settings(continued, settings, apply=True):
             return
-        args = (value, continued) if continued is not None else (value,)
+        if request_id is not None:
+            args: tuple[Any, ...] = (value, continued, request_id)
+        else:
+            args = (value, continued) if continued is not None else (value,)
         outcome = app.call_text(
             "api.chat", app.controls.chat, *args, timeout_s=app.config.chat_timeout_s
         )
