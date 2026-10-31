@@ -105,6 +105,8 @@ _DRAIN_SHIFT = time.time() - DRAIN_EPOCH
 def drain_clock() -> float:
     """Real time, shifted so the drain's UTC date is the day after the fixture issue."""
     return time.time() - _DRAIN_SHIFT
+
+
 NEWS_SENTINEL = "zqxharbour-bridge-closes-for-repairs"
 NEWS_LINK = "https://example.invalid/bridge"
 PUBLIC_HOST = "gwen.example.invalid"
