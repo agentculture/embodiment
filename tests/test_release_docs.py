@@ -44,6 +44,7 @@ NOT_YET = (
     "live realtime voice",
     "speech-to-speech",
     "robot relay",
+    "english voice",
     "value",
 )
 
@@ -84,6 +85,7 @@ TOOLS_BOUND = (
     "search_conversations",
     "list_todos",
     "set_todo_done",
+    "ask_culture",
 )
 
 #: The library cycle's names, which README and the explain root must both carry.
@@ -308,3 +310,25 @@ def test_choose_section_is_described_as_built() -> None:
     assert 'no "Choose section" control' not in claude
     assert "Choose section" in readme
     assert "Choose section" in claude
+
+
+#: The 0.24.0 branch's names, which README and the explain root must both carry:
+#: personas, model choice, the translator, spark-gwen, English text-only, and
+#: that a newly linked server can read Gwen's memory.
+PERSONA_MESH_TERMS = (
+    "personas",
+    "model choice",
+    "translator",
+    "spark-gwen",
+    "english is text-only",
+    "a newly linked server can read gwen's memory",
+)
+
+
+@pytest.mark.parametrize("surface", ["readme", "explain_root"])
+def test_surface_describes_personas_models_and_the_mesh(
+    surface: str, request: pytest.FixtureRequest
+) -> None:
+    text = " ".join(request.getfixturevalue(surface).lower().split())
+    missing = [term for term in PERSONA_MESH_TERMS if term not in text]
+    assert not missing, f"{surface} lacks {missing}"
