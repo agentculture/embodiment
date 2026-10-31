@@ -27,6 +27,8 @@ import { LibraryPane } from "./components/LibraryPane";
 import { Reader, type ReaderHandle } from "./components/Reader";
 import { SourcesPane, type AnswerSources, type SideTab } from "./components/SourcesPane";
 import { HistoryPane } from "./components/HistoryPane";
+import { MeshCards } from "./components/MeshCards";
+import { openAskCount } from "./api/mesh";
 import { PastConversation } from "./components/PastConversation";
 import type { ConversationSummary } from "./api/history";
 import { StatsView } from "./components/StatsView";
@@ -345,7 +347,7 @@ export default function App({
       // continued; everything else opens the library reader on the right.
       const cited = answers.flatMap((a) => a.sources).find((s) => s.item_id === itemId);
       if (cited?.source === "conversation") {
-        setPast({ id: itemId, title: cited.title, started: null, last: null, turns: 0, current: false });
+        setPast({ id: itemId, title: cited.title, started: null, last: null, turns: 0, current: false, agent: null });
         if (!wide(1280)) setRightOpen(false);
         return;
       }
@@ -645,6 +647,8 @@ export default function App({
               </button>
             </div>
             {past && (
+              <>
+              <MeshCards events={stream.mesh} conversationId={past.id} />
               <PastConversation
                 conversation={past}
                 secret={appliedSecret}
@@ -655,6 +659,7 @@ export default function App({
                   placeholder: narrow ? "Ask Gwen" : "Continue this conversation",
                 }}
               />
+              </>
             )}
             <div className="live-conversation" hidden={past !== null}>
             <section className="thread thread--voice" aria-labelledby="voice-thread-title">
@@ -662,6 +667,7 @@ export default function App({
                 Transcript
               </h2>
               <Transcript entries={transcriptNow} />
+              <MeshCards events={stream.mesh} conversationId={null} />
             </section>
             <Chat
               key={liveKey}
@@ -684,6 +690,7 @@ export default function App({
                   onChange={(patch) => setSettings((cur) => ({ ...cur, ...patch }))}
                   unavailable={unavailable}
                   onRetry={retry}
+                  openAsks={openAskCount(stream.mesh)}
                 />
               )}
             />

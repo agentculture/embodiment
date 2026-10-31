@@ -18,6 +18,8 @@ export interface DockMetaProps {
   /** The role that could not answer (turns the Model control amber), or null/undefined. */
   unavailable?: string | null;
   onRetry?: () => void;
+  /** Asks Gwen posted on Culture chat that are still waiting; shown when above zero. */
+  openAsks?: number;
 }
 
 type MenuId = "persona" | "lang" | "model";
@@ -87,7 +89,7 @@ function Menu({
   );
 }
 
-export function DockMeta({ personas, builtinId, models, settings, onChange, unavailable, onRetry }: DockMetaProps) {
+export function DockMeta({ personas, builtinId, models, settings, onChange, unavailable, onRetry, openAsks = 0 }: DockMetaProps) {
   const [open, setOpen] = useState<MenuId | null>(null);
   const [left, setLeft] = useState(0);
   const root = useRef<HTMLDivElement>(null);
@@ -186,6 +188,15 @@ export function DockMeta({ personas, builtinId, models, settings, onChange, unav
           <button type="button" className="meta-btn" onClick={onRetry}>
             Retry
           </button>
+        </>
+      )}
+
+      {openAsks > 0 && (
+        <>
+          {sep}
+          <span className="meta-btn meta-count" role="status">
+            <span className="k">Open asks</span> <b>{openAsks}</b>
+          </span>
         </>
       )}
 

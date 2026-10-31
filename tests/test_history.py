@@ -192,3 +192,24 @@ def test_an_agent_turn_logged_via_mesh_keeps_its_tag() -> None:
 
     assert history.VIA_MESH in history.EVIDENCE
     assert history.VIA_MESH in history._USER_VIAS
+
+
+def test_a_conversation_summary_names_the_agent(tmp_path: Path) -> None:
+    """The list API says which agent a mesh conversation is with (t17); null otherwise."""
+    _log(
+        tmp_path,
+        "agent1",
+        [
+            {**_turn("user", "hi gwen", 10.0), "via": "mesh", "mesh_agent": "thor-lobes"},
+            _turn("assistant", "hello", 11.0),
+        ],
+        50.0,
+    )
+    _log(tmp_path, "plain", [_turn("user", "q", 20.0)], 60.0)
+    by_id = {c["id"]: c for c in ConversationHistory(tmp_path).conversations()["conversations"]}
+    assert by_id["agent1"]["agent"] == "thor-lobes"
+    assert by_id["plain"]["agent"] is None
+    assert (
+        ConversationHistory(tmp_path).conversation("agent1")["conversation"]["agent"]
+        == "thor-lobes"
+    )

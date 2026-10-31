@@ -788,3 +788,21 @@ button.source-open:hover { border-color: var(--cobalt); box-shadow: var(--shadow
   .editor { grid-template-columns: 1fr; }
   .editor .row2 { grid-template-columns: 1fr; }
 }
+
+/* Mesh cards (gwen-pm t17, mockup v2): asks Gwen posted on Culture chat and what came back. */
+.mesh-cards { display: grid; gap: 0.4rem; }
+.mesh { border: 1px solid var(--rule); border-radius: var(--radius-m); background: var(--sheet); padding: 0.65rem 0.8rem; display: grid; gap: 0.4rem; margin-block: 0.6rem 0.2rem; }
+.mesh__head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem 0.5rem; font-size: 0.78rem; color: var(--quiet); }
+.mesh__head b { font-weight: 750; color: var(--ink); }
+.mesh__mark { color: var(--warn); font-weight: 700; }
+.nick { font-family: var(--mono); font-size: 0.72rem; background: var(--well); border-radius: var(--radius-s); padding: 0.02rem 0.35rem; color: var(--ink); }
+.pending { color: var(--warn); font-weight: 700; display: inline-flex; align-items: center; gap: 0.3rem; }
+.pending::before { content: ""; inline-size: 0.5rem; block-size: 0.5rem; border-radius: 50%; border: 2px solid currentColor; border-inline-end-color: transparent; }
+@media (prefers-reduced-motion: no-preference) { .pending::before { animation: mesh-spin 1s linear infinite; } }
+@keyframes mesh-spin { to { transform: rotate(360deg); } }
+.arrived { color: var(--cobalt); font-weight: 700; }
+.expired { color: var(--muted); font-weight: 700; }
+.mesh blockquote { margin: 0; padding: 0.45rem 0.7rem; border-inline-start: 3px solid var(--tape); background: var(--paper); border-radius: var(--radius-s); font-size: 0.92rem; }
+.mesh small { color: var(--muted); font-size: 0.72rem; }
+.meta-count b { font-weight: 750; color: var(--warn); }
+.conv .nick { flex: none; }
