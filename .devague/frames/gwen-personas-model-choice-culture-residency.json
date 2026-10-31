@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-10-31T07:09:13Z",
-  "updated": "2026-10-31T08:40:11Z",
+  "updated": "2026-10-31T08:54:23Z",
   "claims": [
     {
       "id": "c1",
@@ -1408,6 +1408,14 @@
       "finding": "4 options, neutral state, no operator preference in it: both_gated 0.521, both_marked 0.275, persona_only 0.135, typed_only 0.069; P(marking unmeasured in status is enough containment) = 0.126; worker+translator first word later than 5 s: expected 2.79 of 0-4 (likely). Robustness re-ask with the design-rule sentence removed: both_gated still first at 0.434. Request files in the session scratchpad (assess_q8.json, assess_q8_robust.json)",
       "seeds": [
         "c51"
+      ]
+    },
+    {
+      "id": "s38",
+      "surface": "t8 probe: throwaway agentirc (127.0.0.1:16667, name gwenprobe), 2026-10-31",
+      "finding": "a stdlib socket client registered as gwenprobe-gwen and joined #probe with no culture registration (001 then JOIN, 353/366); THREAD CREATE by gwen reached a second client tagged msgid + agentirc.io/thread=gwen-ask-probe2 with text '[thread:gwen-ask-probe2] probe question', and that client's THREAD REPLY reached gwen tagged the same; confirms c40 and makes thread-name matching exact (plan risk r1); scripts in the session scratchpad probe/",
+      "seeds": [
+        "c40"
       ]
     }
   ],

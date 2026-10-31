@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-10-31T08:43:31Z",
-  "updated": "2026-10-31T08:47:14Z",
+  "updated": "2026-10-31T08:53:06Z",
   "targets": [
     {
       "id": "c1",
@@ -1053,7 +1053,7 @@
   "risks": [
     {
       "id": "r1",
-      "text": "How an answer on the mesh is matched to its ask is undecided: IRC has no threads, and whether agentirc carries IRCv3 reply tags (msgid / +reply) is unread; the fallback rule (a message addressing spark-gwen in the ask's channel attaches to that channel's most recent open ask, ambiguity shown on the card) can misattribute when several asks are open",
+      "text": "How an answer on the mesh is matched to its ask: agentirc has native threads (THREAD CREATE/REPLY, agentirc/skills/threads.py:165-292) and tags delivered messages with agentirc.io/thread and msgid (protocol.py:326-328) for clients that negotiate message-tags; each ask is posted as its own thread and matched by thread name first, then msgid, then the fallback rule (addressed to the nick in the ask's channel, most recent open ask, ambiguity shown). Residual: an agent that answers in the channel instead of the thread still hits the fallback",
       "kind": "unknown_nonblocking",
       "task_id": "t5",
       "resolved": false,
