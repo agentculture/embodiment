@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-10-31T08:43:31Z",
-  "updated": "2026-10-31T09:15:05Z",
+  "updated": "2026-10-31T09:24:27Z",
   "targets": [
     {
       "id": "c1",
@@ -1102,6 +1102,14 @@
     {
       "id": "r7",
       "text": "t4's mesh client stays off on any 433, including the case where Gwen reconnects before the server has dropped her previous connection (her own ghost holds the nick); t15 should retry registration once after the server's ping timeout on a reconnect-time 433 and record mesh-nick-taken only if it persists",
+      "kind": "unknown_nonblocking",
+      "task_id": "t15",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r8",
+      "text": "AskBook has no cancel: when the post fails after an ask is opened (ask-refused-post-failed), the ask stays open until it expires and holds one of the 8 open-ask slots; t15 should close it as failed (a small AskBook addition) rather than let failed posts exhaust the cap",
       "kind": "unknown_nonblocking",
       "task_id": "t15",
       "resolved": false,

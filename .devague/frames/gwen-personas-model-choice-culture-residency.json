@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-10-31T07:09:13Z",
-  "updated": "2026-10-31T08:54:23Z",
+  "updated": "2026-10-31T09:19:22Z",
   "claims": [
     {
       "id": "c1",
@@ -1419,6 +1419,16 @@
       ]
     }
   ],
-  "lapses": [],
+  "lapses": [
+    {
+      "id": "l1",
+      "code": "grader-unverified",
+      "what": "t2's report said the AST no-silent-degradation test still passed; on the merged tree it failed on t2's own new silent swallow (capabilities.py _degrade), found by the main agent's full-suite gate after merge and fixed on the integration branch",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    }
+  ],
   "obligations": []
 }
