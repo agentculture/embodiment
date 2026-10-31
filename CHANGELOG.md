@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.5] - 2026-10-31
+
+### Fixed
+
+- tests/test_acceptance_ingest.py ran its real `Drain` on the host clock, and the drain archives a newspaper issue 30 days after its date (daemon/drain.py), so from 2026-10-31 the fixture issue (2026-10-01) expired and six acceptance tests failed with "the backfill never cached the vectors". The drain now gets a clock anchored at 2026-10-02T12:00Z running at real speed, so the fixture stays fixed and replayable.
+
 ## [0.23.4] - 2026-10-26
 
 ### Changed
