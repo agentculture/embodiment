@@ -1895,10 +1895,7 @@ def _read_stream(
             continue
         if isinstance(chunk.get("usage"), dict):
             usage = chunk["usage"]
-        for choice in chunk.get("choices") or []:
-            delta = choice.get("delta") if isinstance(choice, dict) else None
-            if isinstance(delta, dict):
-                size += _take_delta(delta, text, calls, on_delta)
+        size += _take_chunk(chunk, text, calls, on_delta)
         if size > MAX_STREAM_CHARS:
             raise ValueError("the streamed completion exceeded its size bound")
     message = {
@@ -1927,6 +1924,21 @@ def _stream_chunk(raw_line: bytes) -> Any:
         return json.loads(data)
     except (ValueError, RecursionError):
         return None
+
+
+def _take_chunk(
+    chunk: dict[str, Any],
+    text: dict[str, list[str]],
+    calls: dict[int, dict[str, Any]],
+    on_delta: Optional[Callable[[str, str], None]],
+) -> int:
+    """Fold every choice's delta of one chunk in; the characters added."""
+    size = 0
+    for choice in chunk.get("choices") or []:
+        delta = choice.get("delta") if isinstance(choice, dict) else None
+        if isinstance(delta, dict):
+            size += _take_delta(delta, text, calls, on_delta)
+    return size
 
 
 def _take_delta(
