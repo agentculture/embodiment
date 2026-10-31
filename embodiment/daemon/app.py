@@ -205,7 +205,14 @@ from embodiment.library.todo_source import TodoSource
 from embodiment.memory import PRIVATE, RoomMemory, SemanticRecall, render_recalled
 from embodiment.perception import perceive
 from embodiment.persona_prompt import compose_base, english_tool_prompts, tool_prompt_language
-from embodiment.personas import BUILTIN_ID, Persona, PersonaStore, builtin_persona
+from embodiment.personas import (
+    BUILTIN_ID,
+    LANGUAGES,
+    Persona,
+    PersonaError,
+    PersonaStore,
+    builtin_persona,
+)
 from embodiment.realtime import wire
 from embodiment.realtime.client import RealtimeConfig, RealtimeEars
 from embodiment.session import ASK_RECORD_TYPE, PERSONA_FIELD, Session, default_ask_detector
@@ -2526,6 +2533,8 @@ class DaemonApp:
         #: The conversation's model (t12): each conversation's chosen role, keyed as
         #: personas are; one holder the seam reads; the gateway's roles; voice latency.
         self._conversation_roles: OrderedDict[str, str] = OrderedDict()
+        #: A conversation's language override (t14), keyed as personas are.
+        self._conversation_languages: OrderedDict[str, str] = OrderedDict()
         self._role_holder = lanes.role_holder or RoleHolder(
             self._config.role, self._config.completion_deadline
         )
@@ -3744,6 +3753,7 @@ class DaemonApp:
                         **timing.to_dict(),
                         "timestamps": stamps(stamp(STAMP_GENERATED, time.time())),
                         PERSONA_FIELD: turn.persona_id,
+                        **self._language_trace(turn.persona_id, turn.persona),
                         **_target_trace(turn.target, turn.translation),
                     },
                 ),
@@ -4421,6 +4431,43 @@ class DaemonApp:
         self._maybe_probe(self._session_role(session))  # its default role, if chosen so
         return persona
 
+    def conversation_language(self, conversation: Optional[str] = None) -> Optional[str]:
+        """The language override chosen for *conversation* (``None``: the live one), or
+        ``None`` when it speaks its persona's own language."""
+        if conversation is None:
+            with self._lock:
+                session = self._session
+        else:
+            session = self._session_for(conversation)
+        return self._session_language(session)
+
+    def set_conversation_language(
+        self, language: Any, conversation: Optional[str] = None
+    ) -> Optional[str]:
+        """Make *conversation* speak *language* (``he``, ``en`` or ``none``) in place of
+        its persona's, for this conversation only. Returns the language, or ``None``
+        (nothing changes) for a language that is not one of those or no such
+        conversation. A running turn keeps its language; the next one takes this."""
+        if language not in LANGUAGES:
+            return None
+        session = (
+            self._ensure_session() if conversation is None else self._session_for(conversation)
+        )
+        if session is None:
+            return None
+        key = self._persona_key(conversation, session)
+        with self._lock:
+            self._conversation_languages[key] = language
+            self._conversation_languages.move_to_end(key)
+            while len(self._conversation_languages) > CONVERSATION_PERSONAS_KEPT:
+                self._conversation_languages.popitem(last=False)
+        return language
+
+    def _session_language(self, session: Any) -> Optional[str]:
+        key = self._persona_key(None, session) if session is not None else None
+        with self._lock:
+            return self._conversation_languages.get(key) if key is not None else None
+
     def _session_for(self, conversation: str) -> Optional[Any]:
         """The live session when *conversation* is its id, else the reopened one."""
         live = self._current_session_log()
@@ -4469,6 +4516,9 @@ class DaemonApp:
         self._fold_personas()
         if isinstance(session, Session) and session.persona_id is None:
             session.persona_id = persona_id
+        language = self._session_language(session)
+        if persona is not None and language is not None and language != persona.language:
+            persona = replace(persona, language=language)
         return persona_id, persona
 
     def _typed_persona_id(self) -> Optional[str]:
@@ -4646,7 +4696,20 @@ class DaemonApp:
     def _typed_trace(self) -> dict[str, Any]:
         """The running typed turn's role/model/host, for its assistant record."""
         turn = getattr(self._tls, "text_turn", None)
-        return _target_trace(turn.target, turn.translation) if turn is not None else {}
+        if turn is None:
+            return {}
+        return {
+            **self._language_trace(turn.persona_id, turn.persona),
+            **_target_trace(turn.target, turn.translation),
+        }
+
+    def _language_trace(self, persona_id: str, persona: Optional[Persona]) -> dict[str, Any]:
+        """``{"language": ...}`` when the turn spoke a language other than its persona's own
+        (the conversation's override, t14); empty otherwise, so a record is unchanged."""
+        stored = self._personas.get(persona_id)
+        if persona is None or stored is None or persona.language == stored.language:
+            return {}
+        return {"language": persona.language}
 
     def _maybe_probe(self, role: str) -> None:
         """Start ONE background voice-latency probe of *role* when it is unmeasured.
@@ -4759,9 +4822,12 @@ class DaemonApp:
                     "model": getattr(r, "model", None),
                     "ready": getattr(r, "ready", None),
                     "host": getattr(r, "host", None),
+                    "voice": self._voice_latency.state(getattr(r, "role", None)),
+                    "voice_p90_s": self._voice_latency.p90(getattr(r, "role", None)),
                 }
                 for r in (getattr(snapshot, "roles", ()) or ())
             ],
+            "conversations": self._live_conversation_settings(),
             "stale": getattr(snapshot, "stale", True) if snapshot is not None else True,
             "age_s": getattr(snapshot, "age", None) if snapshot is not None else None,
             "voice_latency": self._voice_latency.snapshot(),
@@ -4770,6 +4836,119 @@ class DaemonApp:
             "unavailable": counts[1],
             "voice_gated": counts[2],
         }
+
+    def _live_conversation_settings(self) -> list[dict[str, Any]]:
+        """Each live (the current and the reopened) conversation's persona, role, language."""
+        with self._lock:
+            live = self._session
+            sessions = [(live, True), *((r, False) for r in self._resumed.values())]
+        out = []
+        for session, is_live in sessions:
+            if session is None:
+                continue
+            out.append(
+                {
+                    "conversation": getattr(session, "session_id", None),
+                    "live": is_live,
+                    "persona": self._session_persona_id(session),
+                    "role": self._session_role(session),
+                    "language": self._session_language(session),
+                }
+            )
+        return out
+
+    # ── the HTTP routes' callables (t14): personas, models, a conversation's settings ──
+
+    def _control_personas(self) -> dict[str, Any]:
+        personas = [p.to_dict() for p in self._personas.list()]
+        self._fold_personas()
+        return {"personas": personas, "builtin_id": BUILTIN_ID}
+
+    def _persona_call(self, call: Callable[[], Any]) -> dict[str, Any]:
+        try:
+            result = call()
+        except PersonaError as exc:
+            self._fold_personas()
+            return {"code": exc.code}
+        self._fold_personas()
+        return result
+
+    def _control_persona_create(self, fields: dict[str, Any]) -> dict[str, Any]:
+        fields = dict(fields)
+        if "persona_id" in fields:  # the store's own parameter name is not a field
+            return {"code": "unknown_field"}
+        pid = fields.pop("id", None)
+        return self._persona_call(
+            lambda: {"persona": self._personas.create(persona_id=pid, **fields).to_dict()}
+        )
+
+    def _control_persona_update(self, persona_id: str, fields: dict[str, Any]) -> dict[str, Any]:
+        if "persona_id" in fields:
+            return {"code": "unknown_field"}
+        return self._persona_call(
+            lambda: {"persona": self._personas.update(persona_id, **fields).to_dict()}
+        )
+
+    def _control_persona_delete(self, persona_id: str) -> dict[str, Any]:
+        def delete() -> dict[str, Any]:
+            if self._personas.delete(persona_id):
+                return {"deleted": persona_id}
+            return {"code": "not_found"}
+
+        return self._persona_call(delete)
+
+    def _control_models(self) -> dict[str, Any]:
+        """``GET /api/models``: the roles the gateway reported, with each one's voice-latency
+        state; never a key (the snapshot carries none)."""
+        models = self._models_status()
+        return {
+            "roles": [
+                {
+                    "role": r["role"],
+                    "model": r["model"],
+                    "ready": r["ready"],
+                    "host": r["host"],
+                    "voice": r["voice"],
+                    "voice_p90_s": r["voice_p90_s"],
+                }
+                for r in models["roles"]
+            ],
+            "stale": models["stale"],
+            "age_s": models["age_s"],
+            "conversation_role": self.conversation_role(),
+        }
+
+    def _control_conversation_settings(
+        self,
+        conversation: Optional[str],
+        persona: Optional[str],
+        model: Optional[str],
+        language: Optional[str],
+        apply: bool,
+    ) -> dict[str, Any]:
+        """Validate (``apply`` false) or apply the optional persona, model and language of
+        one request. Validation changes nothing; a refusal is ``{"code": ...}``."""
+        if persona is not None and self._personas.get(persona) is None:
+            self._fold_personas()
+            return {"code": "unknown_persona"}
+        if model is not None and (
+            voice_latency_module.combo_key(model) != model
+            or (model != self._config.role and self._listed(model) is None)
+        ):
+            return {"code": "unknown_model"}
+        if language is not None and language not in LANGUAGES:
+            return {"code": "bad_language"}
+        if conversation and self._session_for(conversation) is None:
+            return {"code": APP_CONVERSATION_NOT_FOUND}
+        if apply:
+            target = conversation or None
+            if persona is not None and self.set_conversation_persona(persona, target) is None:
+                return {"code": "unknown_persona"}
+            if model is not None and self.set_conversation_role(model, target) is None:
+                return {"code": "unknown_model"}
+            if language is not None and self.set_conversation_language(language, target) is None:
+                return {"code": "bad_language"}
+        return {"code": None}
 
     # ── the library lane (t13): typed-turn tools, the write guard, the routes ──
 
@@ -6924,6 +7103,12 @@ class DaemonApp:
             start_voice=self._control_start_voice,
             stop_voice=self._control_stop_voice,
             new_conversation=self._control_new_conversation,
+            personas=self._control_personas,
+            persona_create=self._control_persona_create,
+            persona_update=self._control_persona_update,
+            persona_delete=self._control_persona_delete,
+            models=self._control_models,
+            conversation_settings=self._control_conversation_settings,
             todo_set=self._control_todo_set,
             set_mute=self._control_set_mute,
             status=self.status,
