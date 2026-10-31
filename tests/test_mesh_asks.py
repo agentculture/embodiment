@@ -1,0 +1,190 @@
+import os
+import stat
+
+from embodiment import mesh_asks as ma
+
+NICK = "spark-gwen"
+
+
+class Clock:
+    def __init__(self, t=1000.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
+
+
+def book(tmp_path, clock=None):
+    return ma.AskBook(tmp_path / ma.ASKS_NAME, clock or Clock())
+
+
+def test_file_is_0600_and_survives_restart_with_answer(tmp_path):
+    clock = Clock()
+    b = book(tmp_path, clock)
+    b.begin_turn("t1")
+    ask = b.open_ask("t1", "conv1", "#room", "who?").ask
+    assert stat.S_IMODE(os.stat(tmp_path / ma.ASKS_NAME).st_mode) == 0o600
+    assert ask["expires_at"] - ask["posted_at"] == ma.DEFAULT_EXPIRY_S
+    b2 = book(tmp_path, clock)  # restart
+    got = b2.answer(NICK, "peer", "#room", f"{NICK}: me")
+    assert got["conversation_id"] == "conv1" and got["ask_id"] == ask["ask_id"]
+    assert b2.all()[0]["answers"][0]["sender"] == "peer"
+    assert b2.all()[0]["status"] == ma.ANSWERED
+
+
+def test_expired_is_shown_never_dropped_and_not_matched(tmp_path):
+    clock = Clock()
+    b = book(tmp_path, clock)
+    b.begin_turn("t1")
+    b.open_ask("t1", "c", "#r")
+    clock.t += ma.DEFAULT_EXPIRY_S + 1
+    assert b.answer(NICK, "p", "#r", f"{NICK}: hi") is None
+    assert [a["status"] for a in b.all()] == [ma.EXPIRED]
+
+
+def test_two_hour_late_answer_lands_marked_late(tmp_path):
+    clock = Clock()
+    b = book(tmp_path, clock)
+    b.begin_turn("t1")
+    b.open_ask("t1", "c", "#r")
+    b.end_turn("t1")
+    clock.t += 2 * 3600
+    got = b.answer(NICK, "p", "#r", f"{NICK}, here")
+    assert got["late"] is True and got["ambiguous"] is False
+
+
+def test_answer_before_turn_end_is_not_late(tmp_path):
+    b = book(tmp_path)
+    b.begin_turn("t1")
+    b.open_ask("t1", "c", "#r")
+    assert b.answer(NICK, "p", "#r", f"{NICK}: x")["late"] is False
+
+
+def test_matching_rule(tmp_path):
+    b = book(tmp_path)
+    b.begin_turn("t1")
+    b.open_ask("t1", "c", "#r")
+    assert b.answer(NICK, "p", "#r", "unrelated chatter") is None
+    assert b.answer(NICK, "p", "#other", f"{NICK}: x") is None
+    assert b.answer(NICK, "p", "#r", f"{NICK}x: no") is None
+    assert b.answer(NICK, "p", "#r", f"I think {NICK} should") is not None
+
+
+def test_dm_matches_dm_ask(tmp_path):
+    b = book(tmp_path)
+    b.begin_turn("t1")
+    b.open_ask("t1", "c", "peer")
+    assert b.answer(NICK, "peer", "peer", "no prefix needed")["conversation_id"] == "c"
+
+
+def test_ambiguous_and_most_recent(tmp_path):
+    clock = Clock()
+    b = book(tmp_path, clock)
+    b.begin_turn("t1")
+    b.open_ask("t1", "c1", "#r")
+    clock.t += 1
+    b.begin_turn("t2")
+    b.open_ask("t2", "c2", "#r")
+    got = b.answer(NICK, "p", "#r", f"{NICK}: x")
+    assert got["conversation_id"] == "c2" and got["ambiguous"] is True
+
+
+def test_reply_to_msgid_wins(tmp_path):
+    b = book(tmp_path)
+    b.begin_turn("t1")
+    b.open_ask("t1", "c1", "#r", msgid="m1")
+    b.begin_turn("t2")
+    b.open_ask("t2", "c2", "#r", msgid="m2")
+    got = b.answer(NICK, "p", "#r", "no address", reply_to="m1")
+    assert got["conversation_id"] == "c1" and got["ambiguous"] is False
+
+
+def test_one_ask_per_turn(tmp_path):
+    b = book(tmp_path)
+    b.begin_turn("t1")
+    assert b.open_ask("t1", "c", "#r").ok
+    r = b.open_ask("t1", "c", "#r")
+    assert not r.ok and r.refusal == ma.REFUSE_TURN_LIMIT
+    assert b.refusals[-1]["code"] == ma.REFUSE_TURN_LIMIT
+
+
+def test_mesh_started_turn_cannot_ask(tmp_path):
+    b = book(tmp_path)
+    assert b.begin_turn("m1", mesh_started=True).ok
+    assert b.open_ask("m1", "c", "#r").refusal == ma.REFUSE_MESH_TURN
+
+
+def test_open_cap(tmp_path):
+    b = book(tmp_path)
+    for i in range(ma.MAX_OPEN_ASKS):
+        b.begin_turn(f"t{i}")
+        assert b.open_ask(f"t{i}", "c", "#r").ok
+    b.begin_turn("x")
+    assert b.open_ask("x", "c", "#r").refusal == ma.REFUSE_OPEN_CAP
+
+
+def test_mesh_turn_rate_cap_and_window(tmp_path):
+    clock = Clock()
+    b = book(tmp_path, clock)
+    for i in range(ma.MAX_MESH_TURNS):
+        assert b.begin_turn(f"m{i}", mesh_started=True).ok
+    assert b.begin_turn("mx", mesh_started=True).refusal == ma.REFUSE_RATE
+    clock.t += ma.MESH_TURN_WINDOW_S + 1
+    assert b.begin_turn("my", mesh_started=True).ok
+
+
+def test_peer_answering_with_questions_yields_one_post_per_operator_turn(tmp_path):
+    b = book(tmp_path)
+    posts = 0
+    b.begin_turn("op1")
+    if b.open_ask("op1", "c", "#r").ok:
+        posts += 1
+    for i in range(5):  # peer answers every ask with a question
+        got = b.answer(NICK, "peer", "#r", f"{NICK}: and you?")
+        if got is None:
+            break
+        b.begin_turn(f"m{i}", mesh_started=True)
+        if b.open_ask(f"m{i}", got["conversation_id"], "#r").ok:
+            posts += 1
+        b.end_turn(f"m{i}")
+    assert posts == 1
+
+
+def test_unreadable_file_set_aside_never_raises(tmp_path):
+    (tmp_path / ma.ASKS_NAME).write_text("{not json")
+    b = book(tmp_path)
+    assert b.all() == [] and b.unreadable == 1
+    assert (tmp_path / (ma.ASKS_NAME + ".unreadable")).exists()
+
+
+def test_save_failure_is_a_recorded_refusal(tmp_path):
+    f = tmp_path / "file"
+    f.write_text("x")
+    b = ma.AskBook(f / ma.ASKS_NAME, Clock())
+    b.begin_turn("t")
+    assert b.open_ask("t", "c", "#r").refusal == ma.REFUSE_SAVE
+    assert b.save_failures == 1
+
+
+def test_thread_name_valid_and_matches_first(tmp_path):
+    import re
+
+    b = book(tmp_path)
+    b.begin_turn("t1")
+    a1 = b.open_ask("t1", "c1", "#r", msgid="m1").ask
+    b.begin_turn("t2")
+    b.open_ask("t2", "c2", "#r")
+    assert re.fullmatch(r"[a-zA-Z0-9]([a-zA-Z0-9-]{0,30}[a-zA-Z0-9])?", a1["thread"])
+    got = b.answer(NICK, "p", "#r", "no address", reply_to="zzz", thread=a1["thread"])
+    assert got["conversation_id"] == "c1" and got["rule"] == ma.RULE_THREAD
+    assert got["ambiguous"] is False
+
+
+def test_rule_recorded_for_reply_to_and_fallback(tmp_path):
+    b = book(tmp_path)
+    b.begin_turn("t1")
+    b.open_ask("t1", "c1", "#r", msgid="m1")
+    assert b.answer(NICK, "p", "#r", "x", reply_to="m1", thread="nope")["rule"] == ma.RULE_REPLY_TO
+    b.begin_turn("t2")
+    b.open_ask("t2", "c2", "#r")
+    assert b.answer(NICK, "p", "#r", f"{NICK}: x")["rule"] == ma.RULE_FALLBACK
