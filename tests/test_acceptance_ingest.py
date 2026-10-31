@@ -60,6 +60,7 @@ import re
 import subprocess  # nosec B404 - the test runs this repo's own CLI
 import sys
 import time
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
@@ -93,6 +94,10 @@ pytestmark = pytest.mark.skipif(
 POCKET_SENTINEL = "zqxotter-survey-moved-to-thursday"
 POCKET_TITLE = "synthetic standup"
 POCKET_DATE = "2026-09-30"
+#: The newspaper issue is dated yesterday, not a fixed day: daemon/drain.py archives an
+#: issue's items 30 days after its issue date, so a fixed date expired on 2026-10-31
+#: and every test that recalls the newspaper failed from then on.
+NEWS_DATE = (date.today() - timedelta(days=1)).isoformat()
 NEWS_SENTINEL = "zqxharbour-bridge-closes-for-repairs"
 NEWS_LINK = "https://example.invalid/bridge"
 PUBLIC_HOST = "gwen.example.invalid"
@@ -313,12 +318,12 @@ def pocket(i: int, text: Optional[str] = None, timestamp: str = "01:05") -> dict
 
 def newspaper(i: int = 0, text: Optional[str] = None) -> dict[str, Any]:
     return {
-        "id": f"newspaper:2026-10-01:item:{i}",
+        "id": f"newspaper:{NEWS_DATE}:item:{i}",
         "type": "item",
         "text": text or f"synthetic harbour bridge closes for repairs {NEWS_SENTINEL}",
         "metadata": {
             "source": "newspaper",
-            "issue_date": "2026-10-01",
+            "issue_date": NEWS_DATE,
             "section": "city",
             "url": NEWS_LINK,
         },
@@ -373,14 +378,14 @@ class TestIngestIsAppliedAndRecalled:
         rec = by_source["pocket"]
         assert (rec["title"], rec["date"], rec["start"]) == (POCKET_TITLE, POCKET_DATE, 65)
         paper = by_source["newspaper"]
-        assert (paper["date"], paper["link"]) == ("2026-10-01", NEWS_LINK)
+        assert (paper["date"], paper["link"]) == (NEWS_DATE, NEWS_LINK)
         # ...and the same provenance reached the prompt, as quoted data (c-render funnel).
         prompt = echoing_complete.prompts[-1]
         assert mem.BEGIN_MARK in prompt
         assert POCKET_TITLE in prompt
         assert POCKET_DATE in prompt
         assert "01:05" in prompt
-        assert "2026-10-01" in prompt
+        assert NEWS_DATE in prompt
         assert "city" in prompt
         assert NEWS_LINK in prompt
         assert len(rig.endpoint.played) == played, "a typed turn never reaches the speaker"

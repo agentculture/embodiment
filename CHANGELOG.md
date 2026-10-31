@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.5] - 2026-10-31
+
+### Fixed
+
+- tests/test_acceptance_ingest.py dated its newspaper issue 2026-10-01; the drain archives an issue 30 days after its date (daemon/drain.py), so from 2026-10-31 six acceptance tests failed with "the backfill never cached the vectors". The issue is now dated yesterday.
+
 ## [0.23.4] - 2026-10-26
 
 ### Changed
