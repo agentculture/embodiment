@@ -20,6 +20,7 @@ anything could start it, and never call ``start()``.
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -165,6 +166,135 @@ def _ask_once(h: Any, ircd: FakeIrcd) -> str:
     assert answer["ok"] is True, answer
     wait_for(lambda: ircd.sent("THREAD CREATE"))
     return _thread_of(ircd)
+
+
+# ── presence (embodiment#121) ────────────────────────────────────────────────
+
+
+def _presence_states(ircd: FakeIrcd) -> list[str]:
+    return [json.loads(line.split(" :", 1)[1])["state"] for line in ircd.sent("PRESENCE ")]
+
+
+class TestPresence:
+    def test_the_lane_gauge_drives_the_client_and_close_drains(
+        self, harness: Any, ircd: FakeIrcd, tmp_path: Path
+    ) -> None:
+        gauge = app_module.PresenceGauge()
+        h = _wired(harness, _lane(tmp_path, make_config(ircd), presence=gauge))
+        h.app.start()
+        _registered(h)
+        wait_for(lambda: _presence_states(ircd) == ["idle"])
+        assert ircd.sent("MODE spark-gwen +A")
+        with gauge.busy():
+            wait_for(lambda: _presence_states(ircd)[-1:] == ["thinking"])
+        wait_for(lambda: _presence_states(ircd)[-1:] == ["idle"])
+        assert h.app.status()["mesh"]["presence"]["state"] == "idle"
+        h.app.close(deadline=3.0)
+        wait_for(lambda: ircd.sent("QUIT"))
+        assert _presence_states(ircd)[-1] == "draining"
+        with gauge.busy():  # detached on stop: the closed client is told nothing
+            pass
+        assert gauge.failures == 0
+
+    def test_status_reports_the_sasl_state_never_the_secret(
+        self, harness: Any, ircd: FakeIrcd, tmp_path: Path
+    ) -> None:
+        secret = "agent-secret-for-the-test-0123456789"
+        ircd.sasl_secret = secret
+        h = _wired(harness, _lane(tmp_path, make_config(ircd, sasl_secret=secret)))
+        h.app.start()
+        _registered(h)
+        wait_for(lambda: h.app.status()["mesh"]["sasl"] == "authenticated")
+        assert secret not in json.dumps(h.app.status(), default=str)
+
+    def test_a_whole_typed_turn_holds_thinking_across_its_tool_steps(
+        self, harness: Any, ircd: FakeIrcd, tmp_path: Path
+    ) -> None:
+        gauge = app_module.PresenceGauge()
+        h = _wired(
+            harness,
+            _lane(tmp_path, make_config(ircd), presence=gauge),
+            _call("remember", fact="the kettle is descaled"),
+        )
+        h.app.start()
+        _registered(h)
+        assert h.app.controls().chat(TYPED)["ok"] is True
+        assert gauge.inflight == 0
+        states = _presence_states(ircd)
+        # one thinking for the whole turn (the remember step between completions included)
+        assert states.count("thinking") == 1
+
+    def test_a_lane_without_a_gauge_still_publishes_idle(
+        self, harness: Any, ircd: FakeIrcd, tmp_path: Path
+    ) -> None:
+        h = _wired(harness, _lane(tmp_path, make_config(ircd)))
+        h.app.start()
+        _registered(h)
+        wait_for(lambda: _presence_states(ircd) == ["idle"])
+
+
+def test_the_session_summary_holds_thinking_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    gauge = app_module.PresenceGauge()
+    seen: list[int] = []
+
+    def fake_complete(messages: Any, **kwargs: Any) -> ModelResponse:
+        seen.append(gauge.inflight)
+        return ModelResponse(content="summary")
+
+    monkeypatch.setattr(app_module, "http_complete", fake_complete)
+    summarise = app_module.gateway_summariser(
+        app_module.AppConfig(gateway_url="http://g.invalid"), presence=gauge
+    )
+    assert summarise([{"role": "user", "content": "q"}]) == "summary"
+    assert seen == [1]
+    assert gauge.inflight == 0
+
+
+def test_the_gateway_seam_holds_thinking_for_the_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gauge = app_module.PresenceGauge()
+    seen: list[int] = []
+
+    def fake_complete(messages: Any, **kwargs: Any) -> ModelResponse:
+        seen.append(gauge.inflight)
+        return ModelResponse(content="ok")
+
+    monkeypatch.setattr(app_module, "http_complete", fake_complete)
+    seam = app_module.gateway_seam(
+        app_module.AppConfig(gateway_url="http://g.invalid"),
+        app_module.RoleHolder(),
+        presence=gauge,
+    )
+    assert seam([{"role": "user", "content": "q"}]).content == "ok"
+    assert seen == [1]
+    assert gauge.inflight == 0
+
+
+def test_a_real_ask_keeps_its_claim_and_records_the_deed(
+    harness: Any, ircd: FakeIrcd, tmp_path: Path
+) -> None:
+    claim = "שלחתי את השאלה לצ'אט של Culture. אעדכן אותך כשתגיע תשובה."
+    h = _wired(
+        harness,
+        _lane(tmp_path, make_config(ircd)),
+        _call("ask_culture", question=QUESTION),
+        ModelResponse(content=claim),
+    )
+    h.app.start()
+    _registered(h)
+    answer = h.app.controls().chat(TYPED)
+    assert answer["reply"] == claim  # true: no correction
+    assert h.app.status()["mesh"]["claims_unbacked"] == 0
+    rows = [r for r in _user_rows_all(h) if r.get("role") == "assistant"]
+    assert rows[-1]["actions"] == ["asked Culture chat on #general"]
+
+
+def _user_rows_all(h: Any) -> list[dict[str, Any]]:
+    rows = []
+    for path in sorted((Path(h.app._state.dir) / SESSIONS_DIRNAME).glob("*.jsonl")):
+        rows.extend(json.loads(line) for line in path.read_text(encoding="utf-8").splitlines())
+    return rows
 
 
 # ── criterion 1: the resident, ask_culture on every turn, agent turns ──────────
@@ -788,8 +918,25 @@ class TestMain:
             assert lane.config.enabled is True
             assert lane.config.nick == "spark-gwen"
             assert lane.judge == app_module.MESH_JUDGE_ROLE == "senses"
+            assert isinstance(lane.presence, app_module.PresenceGauge)
             assert built == []  # the client is built by start(), never by main()
             assert Path(lane.book._path).parent == Path(application._state.dir)
+        finally:
+            application.close(deadline=2.0)
+
+    def test_main_takes_the_agent_secret_out_of_the_environment(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        secret = "agent-secret-for-the-test-0123456789"
+        monkeypatch.setenv("CULTURE_AGENT_SECRET", secret)
+        application, _ = self._main(tmp_path, monkeypatch)
+        try:
+            assert "CULTURE_AGENT_SECRET" not in os.environ  # no child can inherit it
+            lane = application._mesh
+            assert lane is not None
+            assert lane.config.sasl_secret == secret
+            assert secret not in repr(lane.config)
+            assert secret not in json.dumps(application.status(), default=str)
         finally:
             application.close(deadline=2.0)
 

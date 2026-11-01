@@ -486,6 +486,9 @@ CHAT_ROUTE = "/api/chat"
 _CHAT_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}\Z")
 _CHAT_RESULT_STATES = ("pending", "done", "unknown")
 CHAT_RESULTS_NOT_CONFIGURED_CODE = "chat-results-not-configured"
+#: A chat named by ``request_id`` outran the route's clock: answered ``202`` with this
+#: state, never a degradation, because the turn runs on and is kept by that id (d4).
+CHAT_PENDING_STATE = "pending"
 SPEAK_ROUTE = "/api/speak"
 #: Set on a /api/speak answer whose audio stopped short of the text (a cap or a deadline).
 SPEAK_TRUNCATED_HEADER = "X-Speak-Truncated"
@@ -772,6 +775,8 @@ class _Counters:
     events_dropped_for_secret: int = 0
     controls_timed_out: int = 0
     controls_refused_busy: int = 0
+    #: Named chats answered 202 at the route's clock and left to finish (d4).
+    chats_handed_off: int = 0
 
 
 @dataclass
@@ -1631,8 +1636,18 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             args = (value, continued) if continued is not None else (value,)
         outcome = app.call_text(
-            "api.chat", app.controls.chat, *args, timeout_s=app.config.chat_timeout_s
+            "api.chat",
+            app.controls.chat,
+            *args,
+            timeout_s=app.config.chat_timeout_s,
+            # A 202 promises the answer can be fetched by its id: only with a result store.
+            hand_off=request_id is not None and app.controls.chat_result is not None,
         )
+        if outcome.status == 202:
+            self._send_json(
+                202, {"ok": True, "state": CHAT_PENDING_STATE, "request_id": request_id}
+            )
+            return
         self._answer_text(outcome, ("reply",), serial=True, sources=True)
 
     def _text_refusal(self, outcome: ControlOutcome) -> bool:
@@ -2408,14 +2423,17 @@ class DashboardServer:
         action: Optional[Callable[..., Any]],
         *args: Any,
         timeout_s: Optional[float] = None,
+        hand_off: bool = False,
     ) -> ControlOutcome:
         """:meth:`call_control` for the text routes, on their OWN bounded pool.
 
         Same four refusals with the same codes and shapes; only the pool and its
         outstanding bound (:data:`MAX_TEXT_INFLIGHT`) differ, so a saturated
         text pool answers busy without costing the mute or stop a worker.
+        With *hand_off* the call's result is kept elsewhere (a named chat, d4), so
+        running past *timeout_s* is a ``202`` hand-off, counted, not a timeout.
         """
-        return self._call_on(self._text_lane, label, action, args, timeout_s)
+        return self._call_on(self._text_lane, label, action, args, timeout_s, hand_off)
 
     def _call_on(
         self,
@@ -2424,6 +2442,7 @@ class DashboardServer:
         action: Optional[Callable[..., Any]],
         args: tuple[Any, ...],
         timeout_s: Optional[float],
+        hand_off: bool = False,
     ) -> ControlOutcome:
         if action is None:
             self._degrade(CONTROL_UNBOUND_CODE, f"{_safe_token(label)} is not bound")
@@ -2465,7 +2484,7 @@ class DashboardServer:
                 message="the server is shutting down",
             )
         future.add_done_callback(lambda _future: self._release(lane))
-        return self._await_control(label, future, timeout_s)
+        return self._await_control(label, future, timeout_s, hand_off)
 
     def _admit(self, lane: _Lane) -> bool:
         """Take one outstanding slot on *lane*, or count the busy refusal."""
@@ -2477,7 +2496,11 @@ class DashboardServer:
             return False
 
     def _await_control(
-        self, label: str, future: "Future[Any]", timeout_s: Optional[float] = None
+        self,
+        label: str,
+        future: "Future[Any]",
+        timeout_s: Optional[float] = None,
+        hand_off: bool = False,
     ) -> ControlOutcome:
         """Wait the deadline, then answer with or without the callable.
 
@@ -2491,6 +2514,12 @@ class DashboardServer:
             0.0, float(self.config.control_timeout_s if timeout_s is None else timeout_s)
         )
         done, _pending = wait([future], timeout=deadline)
+        if not done and hand_off:
+            with self._lock:
+                self._counters.chats_handed_off += 1
+            return ControlOutcome(
+                ok=False, result={}, status=202, code="", message="still running; kept by its id"
+            )
         if not done:
             with self._lock:
                 self._counters.controls_timed_out += 1

@@ -215,7 +215,13 @@ from embodiment.mesh_asks import (
     THREAD_PREFIX,
     AskBook,
 )
-from embodiment.mesh_client import MeshClient, MeshConfig, MeshMessage
+from embodiment.mesh_client import (
+    MeshClient,
+    MeshConfig,
+    MeshMessage,
+    PresenceGauge,
+    take_agent_secret,
+)
 from embodiment.perception import perceive
 from embodiment.persona_prompt import compose_base, english_tool_prompts, tool_prompt_language
 from embodiment.personas import (
@@ -228,7 +234,13 @@ from embodiment.personas import (
 )
 from embodiment.realtime import wire
 from embodiment.realtime.client import RealtimeConfig, RealtimeEars
-from embodiment.session import ASK_RECORD_TYPE, PERSONA_FIELD, Session, default_ask_detector
+from embodiment.session import (
+    ACTIONS_FIELD,
+    ASK_RECORD_TYPE,
+    PERSONA_FIELD,
+    Session,
+    default_ask_detector,
+)
 from embodiment.tools import BOUND_REGISTRY_ATTR, ToolRegistry, ToolSpec, bind_tools
 from embodiment.translate import (
     OriginalText,
@@ -1396,6 +1408,20 @@ APP_MESH_INBOX_FULL = "app-mesh-inbox-full"
 #: The "was it for me?" judge could not be asked or its reply not read (review of #117,
 #: finding 3): the deterministic rules decided that message instead.
 APP_MESH_JUDGE_FAILED = "app-mesh-judge-failed"
+#: A reply claimed an ask on the mesh and no ask was posted that turn (2026-11-01 live
+#: run): the reply is kept and a fixed correction is appended to it.
+APP_MESH_CLAIM_UNBACKED = "app-mesh-claim-unbacked"
+#: A reply carried a line in the daemon's own "[done: ...]" record format: removed.
+APP_ACTION_RECORD_FORGED = "app-action-record-forged"
+#: The operator asked for a mesh question, and neither routed role was ready.
+APP_MESH_ROUTE_UNAVAILABLE = "app-mesh-route-unavailable"
+#: The roles an explicit mesh request is routed to, in order, instead of the default
+#: speaker (operator, 2026-11-01: "don't trust senses - try cortex if not bolt").
+MESH_ROUTE_ROLES = ("cortex", "worker")
+#: An assistant record's routing reason, beside chat_role.
+CHAT_ROUTED_FIELD = "chat_routed"
+#: The window line naming what an assistant turn actually did (its action labels).
+WINDOW_ACTIONS_PREFIX = "  [done: "
 #: The role the judge runs as: the local speaker, the smallest model always loaded.
 MESH_JUDGE_ROLE = "senses"
 #: Gwen's reply to an agent was not accepted for sending, or the agent turn gave none.
@@ -1435,7 +1461,7 @@ _MESH_NOTICES = {
     },
 }
 #: Client states that mean the mesh is down (``registered`` is up; the rest are passing).
-_MESH_DOWN_STATES = frozenset({"backoff", "nick-refused", "off"})
+_MESH_DOWN_STATES = frozenset({"backoff", "nick-refused", "sasl-refused", "off"})
 
 
 def nick_retry_wait(config: MeshConfig) -> float:
@@ -2195,8 +2221,20 @@ class RoleHolder:
         return bool(getattr(self._tls, "stream", False))
 
 
-def gateway_seam(config: "AppConfig", holder: RoleHolder) -> Callable[..., ModelResponse]:
-    """The daemon's chat seam: :func:`http_complete` on the role *holder* names."""
+def _mesh_presence(client: Any) -> Optional[dict[str, Any]]:
+    """``status.mesh.presence`` (#121): what Gwen last published, and how many lines;
+    ``None`` from a client without :meth:`MeshClient.presence` (which never raises)."""
+    reader = getattr(client, "presence", None)
+    return dict(reader()) if callable(reader) else None
+
+
+def gateway_seam(
+    config: "AppConfig", holder: RoleHolder, presence: Optional[PresenceGauge] = None
+) -> Callable[..., ModelResponse]:
+    """The daemon's chat seam: :func:`http_complete` on the role *holder* names.
+
+    With *presence* every completion runs inside :meth:`PresenceGauge.busy`, so the
+    mesh row reads ``thinking`` exactly while a model call is in flight (#121)."""
 
     def seam(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
         role, deadline = holder.current()
@@ -2204,21 +2242,24 @@ def gateway_seam(config: "AppConfig", holder: RoleHolder) -> Callable[..., Model
         stream = holder.streams() or sink is not None
         if stream:
             _feed(sink, STREAM_STEP, "")  # a new model step: the page starts a fresh view
-        return http_complete(
-            messages,
-            tools=tools,
-            gateway_url=config.gateway_url,
-            api_key=config.api_key,
-            role=role,
-            deadline=deadline,
-            stream=stream,
-            on_delta=sink,
-        )
+        with presence.busy() if presence is not None else contextlib.nullcontext():
+            return http_complete(
+                messages,
+                tools=tools,
+                gateway_url=config.gateway_url,
+                api_key=config.api_key,
+                role=role,
+                deadline=deadline,
+                stream=stream,
+                on_delta=sink,
+            )
 
     return seam
 
 
-def gateway_summariser(config: "AppConfig") -> Callable[[list[dict[str, Any]]], str]:
+def gateway_summariser(
+    config: "AppConfig", presence: Optional[PresenceGauge] = None
+) -> Callable[[list[dict[str, Any]]], str]:
     """The end-of-session summary seam: one call on the CONFIGURED role, its own prompt.
 
     Wired because it was the missing half of the memory lane — ``Session.close``
@@ -2230,14 +2271,15 @@ def gateway_summariser(config: "AppConfig") -> Callable[[list[dict[str, Any]]], 
     """
 
     def summarise(messages: list[dict[str, Any]]) -> str:
-        reply = http_complete(
-            [{"role": "system", "content": SUMMARY_PROMPT}, *messages],
-            gateway_url=config.gateway_url,
-            api_key=config.api_key,
-            role=config.role,
-            max_tokens=SUMMARY_MAX_TOKENS,
-            deadline=config.session_summary_deadline,
-        )
+        with presence.busy() if presence is not None else contextlib.nullcontext():
+            reply = http_complete(
+                [{"role": "system", "content": SUMMARY_PROMPT}, *messages],
+                gateway_url=config.gateway_url,
+                api_key=config.api_key,
+                role=config.role,
+                max_tokens=SUMMARY_MAX_TOKENS,
+                deadline=config.session_summary_deadline,
+            )
         return reply.content
 
     return summarise
@@ -2391,6 +2433,9 @@ class MeshLane:
     #: seam as that role, under :data:`mesh_judge.JUDGE_DEADLINE_S`; a callable
     #: ``messages -> reply`` is used as is (tests).
     judge: Any = None
+    #: Gwen's PRESENCE source (#121): the gauge the chat seam drives; each client
+    #: :meth:`DaemonApp.start` builds is attached to it, and detached on stop.
+    presence: Optional[PresenceGauge] = None
 
 
 @dataclass(eq=False)
@@ -2697,6 +2742,9 @@ class _VoiceTurn:
     #: completion actually used them; unused ones go back (review of #117).
     mesh_taken: list[dict[str, Any]] = field(default_factory=list)
     mesh_consumed: bool = False
+    #: Channels this turn posted an ask to, and what it did (ACTIONS_FIELD labels).
+    mesh_posts: list[str] = field(default_factory=list)
+    actions: list[str] = field(default_factory=list)
     mesh_inbound: Optional["_MeshInbound"] = None
 
 
@@ -2759,6 +2807,9 @@ class _TextTurn:
     #: completion actually used them; unused ones go back (review of #117).
     mesh_taken: list[dict[str, Any]] = field(default_factory=list)
     mesh_consumed: bool = False
+    #: Channels this turn posted an ask to, and what it did (ACTIONS_FIELD labels).
+    mesh_posts: list[str] = field(default_factory=list)
+    actions: list[str] = field(default_factory=list)
     mesh_inbound: Optional[_MeshInbound] = None
     prompt_query: str = ""
 
@@ -2798,13 +2849,18 @@ class _ChatTarget:
     host: Optional[str] = None
     #: A spoken turn's voice-latency state when it gates the role; ``None`` when not.
     gate: Optional[str] = None
+    #: Why the role is not the conversation's own (``"mesh-request"``), or ``None``.
+    routed: Optional[str] = None
 
     def trace(self) -> dict[str, Any]:
-        return {
+        trace = {
             CHAT_ROLE_FIELD: self.role,
             CHAT_MODEL_FIELD: self.model,
             CHAT_HOST_FIELD: self.host,
         }
+        if self.routed:
+            trace[CHAT_ROUTED_FIELD] = self.routed
+        return trace
 
 
 def _previous_page_sources(
@@ -3185,6 +3241,8 @@ class DaemonApp:
             "nick_retries": 0,
             "guarded_writes": 0,
             "notices_skipped_voice_off": 0,
+            "claims_unbacked": 0,
+            "routed_turns": 0,
         }
         self._mesh_refusals: dict[str, int] = {}
         #: The channels' recent lines and the judge's call budget (review of #117, 3).
@@ -4259,8 +4317,15 @@ class DaemonApp:
         the reply. ``self._conversation`` keeps a typed turn from interleaving
         with this one's session writes.
         """
-        with self._conversation:
+        with self._conversation, self._presence_busy():
             return self._run_voice_turn(text, serial, timing)
+
+    def _presence_busy(self) -> Any:
+        """Hold Gwen's mesh row at ``thinking`` for a whole turn (review #2 of #122): her
+        tools run between model steps, and per-completion gauging read ``idle`` there."""
+        lane = self._mesh
+        gauge = lane.presence if lane is not None else None
+        return gauge.busy() if gauge is not None else contextlib.nullcontext()
 
     def _run_voice_turn(self, text: str, serial: int, timing: TurnTiming) -> TurnResult:
         self._publish("turn", {"phase": "heard", "step_count": 0})
@@ -4283,7 +4348,7 @@ class DaemonApp:
             clock=self._clock_line(),
             persona_id=persona_id,
             persona=persona,
-            target=self._turn_target(session, spoken=True),
+            target=self._turn_target(session, spoken=True, query=spoken_in),
         )
         self._mesh_begin(turn, str(getattr(session, "session_id", "") or ""), None)
         with self._lock:
@@ -4332,6 +4397,7 @@ class DaemonApp:
                         PERSONA_FIELD: turn.persona_id,
                         **self._language_trace(turn.persona_id, turn.persona),
                         **_target_trace(turn.target, turn.translation),
+                        **_actions_trace(turn),
                     },
                 ),
                 APP_TURN_FAILED,
@@ -4431,6 +4497,7 @@ class DaemonApp:
         # Before the session, the transcript, the bus or the voice see it.
         scrubbed = self._scrub_reply(result.spoken)
         spoken = self._answer_tool_step(scrubbed, before, language="en" if english else "he")
+        spoken = self._reply_checks(here, spoken, english, result.tool_calls)
         # Operator, 2026-10-31: "I need to know when fallback occurs". The code of the
         # fixed text that stood in for the model's answer, shown with the reply.
         self._tls.turn_fallback = _fallback_code(
@@ -4685,7 +4752,8 @@ class DaemonApp:
         conversation :meth:`_hold_conversation` took; the reply carries the
         typed turn's serial so a clip can answer with it.
         """
-        reply = self._run_text_turn_locked(message)
+        with self._presence_busy():
+            reply = self._run_text_turn_locked(message)
         turn = getattr(self._tls, "text_turn", None)
         return _TypedReply(spoken=reply, turn_serial=turn.serial if turn is not None else None)
 
@@ -4716,7 +4784,7 @@ class DaemonApp:
             conversation=conversation,
             persona_id=persona_id,
             persona=persona,
-            target=self._turn_target(session, spoken=False),
+            target=self._turn_target(session, spoken=False, query=self._operator_words(message)),
         )
         inbound = getattr(self._tls, "mesh_inbound", None)
         self._mesh_begin(
@@ -5060,7 +5128,7 @@ class DaemonApp:
         )
         stamps_ = [t["ts"] for t in found["turns"] if isinstance(t.get("ts"), (int, float))]
         session.restore(
-            ((t["role"], t["text"]) for t in found["turns"]),
+            ((t["role"], t["text"], t.get("actions") or []) for t in found["turns"]),
             last_turn_at=max(stamps_) if stamps_ else None,
         )
         log_path = getattr(session.transcript, "path", None)
@@ -5324,9 +5392,7 @@ class DaemonApp:
             self._conversation_roles.popitem(last=False)
 
     def _session_role(self, session: Any) -> str:
-        key = self._persona_key(None, session) if session is not None else None
-        with self._lock:
-            chosen = self._conversation_roles.get(key) if key is not None else None
+        chosen = self._chosen_role(session)
         if chosen is not None:
             return chosen
         persona = self._personas.get(self._session_persona_id(session))
@@ -5362,7 +5428,7 @@ class DaemonApp:
             host=getattr(entry, "host", None) or None,
         )
 
-    def _turn_target(self, session: Any, *, spoken: bool) -> _ChatTarget:
+    def _turn_target(self, session: Any, *, spoken: bool, query: str = "") -> _ChatTarget:
         """The role ONE turn asks and its bound, snapshotted when the turn begins.
 
         The configured speaker (senses) keeps the text completion deadline on every
@@ -5372,6 +5438,9 @@ class DaemonApp:
         measurement; otherwise the turn is gated (``gate`` names the state).
         """
         role = self._session_role(session)
+        routed = self._mesh_route(session, role, query, spoken)
+        if routed is not None:
+            role = routed
         entry = self._listed(role)
         deadline = self._config.completion_deadline
         gate: Optional[str] = None
@@ -5394,7 +5463,87 @@ class DaemonApp:
             model=getattr(entry, "model", None) or None,
             host=getattr(entry, "host", None) or None,
             gate=gate,
+            routed="mesh-request" if routed is not None else None,
         )
+
+    def _mesh_route(self, session: Any, role: str, query: str, spoken: bool) -> Optional[str]:
+        """The role an explicit mesh request runs on instead of the default speaker, or
+        ``None`` (operator, 2026-11-01: senses claimed an ask it never made).
+
+        Only when the operator's words ask for a mesh question, the conversation is on the
+        configured speaker by default (no role chosen for it, by the operator or a persona),
+        and the persona may ask. Cortex, else worker, whichever is ready; a spoken turn
+        only takes one whose voice latency is measured (a gated role would be silent)."""
+        lane = self._mesh
+        if lane is None or not lane.config.enabled or not query or role != self._config.role:
+            return None
+        if self._chosen_role(session) is not None:
+            return None
+        _, persona = self._session_persona(session)
+        if persona is not None and not persona.mesh_enabled:
+            return None
+        if not mesh_tools.explicit_mesh_request(query):
+            return None
+        for candidate in MESH_ROUTE_ROLES:
+            entry = self._listed(candidate)
+            if entry is None or not getattr(entry, "ready", False):
+                continue
+            if spoken and self._voice_latency.state(candidate) != voice_latency_module.MEASURED:
+                continue
+            with self._lock:
+                self._mesh_counts["routed_turns"] += 1
+            return candidate
+        self._record(
+            APP_MESH_ROUTE_UNAVAILABLE,
+            "an explicit mesh request stayed on the default speaker: no routed role ready",
+            source="mesh",
+            once=True,
+        )
+        return None
+
+    def _operator_words(self, message: str) -> str:
+        """*message* when the operator wrote it; ``""`` on a turn an agent started (an
+        agent's words never route a turn, only the operator's explicit request)."""
+        return "" if getattr(self._tls, "mesh_inbound", None) else message
+
+    def _chosen_role(self, session: Any) -> Optional[str]:
+        """The role CHOSEN for *session* (by the operator), or ``None``."""
+        key = self._persona_key(None, session) if session is not None else None
+        with self._lock:
+            return self._conversation_roles.get(key) if key is not None else None
+
+    def _reply_checks(
+        self, turn: Any, spoken: str, english: bool, tool_calls: Iterable[str]
+    ) -> str:
+        """The checks no model is trusted with (2026-11-01): forged ``[done: ...]`` lines go,
+        the turn's real actions are noted, and a claimed ask with no post is corrected."""
+        spoken, forged = mesh_tools.strip_action_records(spoken)
+        if forged:
+            self._record(
+                APP_ACTION_RECORD_FORGED,
+                f"{forged} [done: ...] line(s) in a reply were removed",
+                source="mesh",
+            )
+        if turn is None:
+            return spoken
+        _note_actions(turn, tool_calls)
+        return self._mesh_claim_check(turn, spoken, english)
+
+    def _mesh_claim_check(self, turn: Any, spoken: str, english: bool) -> str:
+        """*spoken*, with a fixed correction when it claims a mesh ask this turn never
+        posted (2026-11-01 live run). Never trusts the model: a pattern, not a judge."""
+        if self._mesh is None or turn.mesh_posts or not mesh_tools.claims_mesh_ask(spoken):
+            return spoken
+        with self._lock:
+            self._mesh_counts["claims_unbacked"] += 1
+        self._record(
+            APP_MESH_CLAIM_UNBACKED,
+            "a reply claimed a mesh ask and none was posted; a correction was added",
+            source="mesh",
+        )
+        turn.actions.append("claimed an ask on Culture chat; nothing was sent")
+        correction = mesh_tools.CLAIM_CORRECTION_EN if english else mesh_tools.CLAIM_CORRECTION_HE
+        return f"{spoken}\n\n{correction}"
 
     def _typed_trace(self) -> dict[str, Any]:
         """The running typed turn's role/model/host, for its assistant record."""
@@ -5404,6 +5553,7 @@ class DaemonApp:
         return {
             **self._language_trace(turn.persona_id, turn.persona),
             **_target_trace(turn.target, turn.translation),
+            **_actions_trace(turn),
         }
 
     def _language_trace(self, persona_id: str, persona: Optional[Persona]) -> dict[str, Any]:
@@ -5621,6 +5771,24 @@ class DaemonApp:
             "stale": models["stale"],
             "age_s": models["age_s"],
             "conversation_role": self.conversation_role(),
+            "conversation": self._live_choices(),
+        }
+
+    def _live_choices(self) -> dict[str, Any]:
+        """The live conversation's persona, and the model and language CHOSEN for it
+        (``None`` where none was: the persona's own applies), so a reloaded page shows
+        what the next turn will use rather than the defaults."""
+        with self._lock:
+            session = self._session
+        key = self._persona_key(None, session) if session is not None else None
+        with self._lock:
+            persona = self._conversation_personas.get(key) if key is not None else None
+        return {
+            # CHOSEN values only (review #2 of #122): a default reported here would come
+            # back as an explicit choice on every chat
+            "persona": persona,
+            "model": self._chosen_role(session),
+            "language": self._session_language(session),
         }
 
     def _control_conversation_settings(
@@ -6409,6 +6577,8 @@ class DaemonApp:
             return
         try:
             client = lane.client_factory(lane.config, self._on_mesh_message)
+            if lane.presence is not None:
+                lane.presence.attach(client)  # before start: the first 001 carries it
             client.start()
         except Exception as exc:  # noqa: BLE001  # degrade, never raise: no mesh this run
             self._record(APP_MESH_DOWN, f"client: {_describe(exc)}", source="mesh")
@@ -6421,6 +6591,8 @@ class DaemonApp:
         if lane is None:
             return True
         self._mesh_stop.set()
+        if lane.presence is not None:
+            lane.presence.attach(None)
         share = max(0.05, float(deadline) / 2)
         client = self._mesh_client
         graceful = True
@@ -6997,6 +7169,10 @@ class DaemonApp:
                 return False
             with self._lock:
                 self._mesh_counts["asks_posted"] += 1
+            here = self._turn_here()
+            if here is not None:
+                here.mesh_posts.append(channel)
+                here.actions.append(f"asked Culture chat on {channel}")
             self._mesh_recent.add(channel, lane.config.nick, text, thread)
             expires = next(
                 (a.get("expires_at") for a in lane.book.all() if a.get("ask_id") == ask_id), None
@@ -7059,12 +7235,16 @@ class DaemonApp:
         client = self._mesh_client
         state = "off"
         servers: tuple[str, ...] = ()
+        presence: Optional[dict[str, Any]] = None
+        sasl: Optional[str] = None
         if client is not None:
             state = str(getattr(client, "state", "") or "unknown")
             try:
                 servers = tuple(client.servers())
             except Exception:  # noqa: BLE001  # a probe that fails reads as none visible
                 servers = ()
+            presence = _mesh_presence(client)
+            sasl = getattr(client, "sasl_state", None)
         try:
             asks = lane.book.all()
         except Exception:  # noqa: BLE001  # the book never raises; belt and braces
@@ -7086,6 +7266,9 @@ class DaemonApp:
             "nick_retry_pending": retry_pending,
             "notices": self._mesh_notices.status(),
             "conversations": len(self.mesh_conversations()),
+            "presence": presence,
+            # off | pending | authenticated | unavailable | refused; never the secret
+            "sasl": sasl if isinstance(sasl, str) else None,
         }
 
     def _library_list(self) -> dict[str, Any]:
@@ -9114,6 +9297,9 @@ def _compose_prompt(
             role = str(message.get("role", ""))
             content = str(message.get("content", ""))
             lines.append(f"{role}: {content}")
+            actions = message.get(ACTIONS_FIELD)
+            if actions:  # what that turn DID; absent, the prompt is byte-identical
+                lines.append(WINDOW_ACTIONS_PREFIX + "; ".join(map(str, actions)) + "]")
         parts.append("\n".join(lines))
     if continuation:
         parts.append(continuation)
@@ -9242,6 +9428,24 @@ def _with_original(spec: ToolSpec, pinned: OriginalText) -> ToolSpec:
         finishes=spec.finishes,
         codes=spec.codes,
     )
+
+
+def _note_actions(turn: Any, tool_calls: Iterable[str]) -> None:
+    """Add this completion's tool calls to *turn*'s action labels. ``ask_culture`` is
+    labelled by the poster when it really posted; called without a post, it says so."""
+    for name in tool_calls:
+        if name == mesh_tools.ASK_TOOL:
+            label = "" if turn.mesh_posts else "ask_culture was called; nothing was sent"
+        else:
+            label = f"used {name}"
+        if label and label not in turn.actions:
+            turn.actions.append(label)
+
+
+def _actions_trace(turn: Any) -> dict[str, Any]:
+    """An assistant record's ACTIONS_FIELD (what the turn did), or nothing."""
+    actions = list(getattr(turn, "actions", None) or [])
+    return {ACTIONS_FIELD: actions} if actions else {}
 
 
 def _target_trace(
@@ -10313,6 +10517,9 @@ def main() -> DaemonApp:
     # module in this package depends on the AudioEndpoint protocol only.
     from embodiment.audio.host import HostEndpoint
 
+    # Gwen's mesh account secret (culture#506, embodiment#121): read ONCE and removed
+    # from the environment before anything here can start a child process.
+    agent_secret = take_agent_secret(os.environ)
     state = DaemonState(resolve_state_dir())
     realtime = RealtimeConfig.from_env()
     secret = guard_module.load_or_create_install_secret(state.dir)
@@ -10323,7 +10530,7 @@ def main() -> DaemonApp:
     # every redaction list beside the gateway key and the install secret.
     library_config = LibraryConfig.from_env(os.environ)
     library_key = library_config.key if library_config is not None else ""
-    secrets = tuple(s for s in (realtime.api_key, secret.secret, library_key) if s)
+    secrets = tuple(s for s in (realtime.api_key, secret.secret, library_key, agent_secret) if s)
     bus = Bus(redact=secrets)
 
     # Records that arrive before the app exists (an incomplete Access env is
@@ -10377,7 +10584,7 @@ def main() -> DaemonApp:
     tools = ToolRegistry()
     # The mesh residency (t15): on by default, EMBODIMENT_MESH=off for none. The client
     # is BUILT by start(), never here: building the daemon dials nothing.
-    mesh_config = MeshConfig.from_env(os.environ)
+    mesh_config = MeshConfig.from_env(os.environ, sasl_secret=agent_secret)
     mesh = MeshLane(
         config=mesh_config,
         book=AskBook(base_dir / ASKS_NAME),
@@ -10388,11 +10595,12 @@ def main() -> DaemonApp:
         ),
         # "Was it for me?" on the small local model (operator, 2026-10-31).
         judge=MESH_JUDGE_ROLE,
+        presence=PresenceGauge(),
     )
 
     holder = RoleHolder(config.role, config.completion_deadline)
-    seam = gateway_seam(config, holder)
-    summarise = gateway_summariser(config)
+    seam = gateway_seam(config, holder, presence=mesh.presence)
+    summarise = gateway_summariser(config, presence=mesh.presence)
     # The chat roles the gateway serves, polled from start (t2, t12). Its failures
     # are recorded ONCE per code: a dead gateway is a degradation, never a raise,
     # and a poll a minute must not grow the ledger by one record a minute.

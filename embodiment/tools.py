@@ -42,7 +42,9 @@ it.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+import contextlib
+import contextvars
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -50,6 +52,7 @@ from embodiment.loop import ToolError, ToolOutcome, UnknownToolError
 from embodiment.safe_reason import describe_exception, name_fingerprint, safe_label
 
 __all__ = [
+    "tools_withheld",
     "BOUND_REGISTRY_ATTR",
     "DEGRADED_TOOL_FAILED",
     "DEGRADED_TOOL_UNKNOWN",
@@ -290,6 +293,26 @@ class ToolRegistry:
         self.degradations.append(ToolDegradation(code=code, reason=reason[:_MAX_REASON_LEN]))
 
 
+#: Set by :func:`tools_withheld`: a bound seam called inside it advertises no tool.
+_TOOLS_WITHHELD: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "embodiment_tools_withheld", default=False
+)
+
+
+@contextlib.contextmanager
+def tools_withheld() -> Iterator[None]:
+    """Inside this block every :func:`bind_tools` callable sends ``tools=None``.
+
+    A context variable rather than a second callable, so a host's wrappers around
+    the bound seam (timing, a write guard) still run on the withheld call: the turn's
+    final step (:mod:`embodiment.turn`) is the one user."""
+    token = _TOOLS_WITHHELD.set(True)
+    try:
+        yield
+    finally:
+        _TOOLS_WITHHELD.reset(token)
+
+
 def bind_tools(
     seam: Callable[..., Any],
     registry: Optional[ToolRegistry] = None,
@@ -321,7 +344,7 @@ def bind_tools(
     reg = registry if registry is not None else ToolRegistry()
 
     def complete(messages: list[dict[str, Any]]) -> Any:
-        return seam(messages, tools=reg.wire_tools())
+        return seam(messages, tools=None if _TOOLS_WITHHELD.get() else reg.wire_tools())
 
     setattr(complete, BOUND_REGISTRY_ATTR, reg)
     return complete

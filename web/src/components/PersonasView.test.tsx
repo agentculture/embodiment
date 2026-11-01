@@ -10,7 +10,7 @@ const models: ModelsInfo = {
     { role: "senses", model: "Gemma", ready: true, host: "spark", voice: "unmeasured", voiceP90S: null },
     { role: "worker", model: "Bolt", ready: true, host: "spark", voice: "unmeasured", voiceP90S: null },
   ],
-  stale: false, ageS: 1, conversationRole: "senses",
+  stale: false, ageS: 1, conversationRole: "senses", live: {},
 };
 
 function api(listBody: unknown = { personas: [gwen, mine], builtin_id: "gwen" }) {

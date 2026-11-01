@@ -27,11 +27,12 @@ import pytest
 from embodiment.contract import ModelResponse, ToolCall
 from embodiment.loop import EXIT_BUDGET, EXIT_FINISHED, EXIT_STOPPED
 from embodiment.safe_reason import UNSAFE_ENV
-from embodiment.tools import DEGRADED_TOOL_FAILED, ToolRegistry, bind_tools
+from embodiment.tools import DEGRADED_TOOL_FAILED, ToolRegistry, bind_tools, tools_withheld
 from embodiment.turn import (
     DEGRADED_BUDGET_EXHAUSTED,
     DEGRADED_EMPTY_COMPLETION,
     DEGRADED_FALLBACK_BLANK,
+    DEGRADED_FINAL_WITHOUT_TOOLS,
     DEGRADED_SEAM_ABORTED,
     DEGRADED_TOOLS_UNBOUND,
     DEGRADED_TRUNCATION_SUSPECTED,
@@ -471,7 +472,8 @@ class TestBudgetExhaustionHasItsOwnCode:
         )
         assert result.exit_reason == EXIT_BUDGET
         assert result.spoken == "השעה 12."
-        assert result.degradations == ()
+        # nothing about the budget; only that the last step went out without tools
+        assert [d.code for d in result.degradations] == [DEGRADED_FINAL_WITHOUT_TOOLS]
 
     def test_a_genuinely_empty_completion_keeps_the_empty_code(self) -> None:
         result = turn("שלום", Scripted(_says("")))
@@ -1088,3 +1090,126 @@ class TestNoSpeechReachesATurnRecord:
         monkeypatch.setenv(UNSAFE_ENV, "1")
         result = turn(MARKER, self._seam_echoing_the_request(MARKER))
         assert_speech_present(MARKER, result.degradations)
+
+
+# ── the final step goes out without tools (t12/c8: Nemotron Bolt looped live) ──
+
+
+class TestTheFinalStepHasNoTools:
+    """A model that would call tools forever must answer on the turn's last step."""
+
+    @staticmethod
+    def _registry() -> ToolRegistry:
+        registry = ToolRegistry()
+        registry.register("clock", {"type": "object"}, lambda: "12:00")
+        return registry
+
+    @staticmethod
+    def _obedient(seen: list[dict[str, Any]]) -> Any:
+        """Calls a tool whenever it is offered one; answers when it is not."""
+
+        def seam(messages: list[dict[str, Any]], *, tools: Any) -> ModelResponse:
+            seen.append({"tools": tools, "last": messages[-1]})
+            if tools:
+                n = len(seen)
+                return ModelResponse(
+                    content="",
+                    tool_calls=[ToolCall(id=f"c{n}", name="clock", arguments={})],
+                    completion_tokens=3,
+                )
+            return ModelResponse(content="השעה 12.", completion_tokens=3)
+
+        return seam
+
+    def test_a_looping_model_answers_on_the_last_step(self) -> None:
+        registry, seen = self._registry(), []
+        result = turn(
+            "מה השעה?",
+            bind_tools(self._obedient(seen), registry),
+            tools=registry,
+            config=TurnConfig(max_steps=4),
+        )
+        assert result.spoken == "השעה 12."
+        assert result.exit_reason != EXIT_BUDGET
+        assert len(seen) == 4  # the budget is unchanged: no extra call
+        assert [bool(call["tools"]) for call in seen] == [True, True, True, False]
+        # nothing is appended: the last call sees the transcript, the tool results last
+        assert seen[-1]["last"]["role"] == "tool"
+        assert result.tool_calls == ("clock",) * 3
+
+    def test_the_withheld_step_is_recorded(self) -> None:
+        registry = self._registry()
+        result = turn(
+            "מה השעה?",
+            bind_tools(self._obedient([]), registry),
+            tools=registry,
+            config=TurnConfig(max_steps=3),
+        )
+        (record,) = [d for d in result.degradations if d.code == DEGRADED_FINAL_WITHOUT_TOOLS]
+        assert "step 3" in record.reason
+        assert DEGRADED_BUDGET_EXHAUSTED not in {d.code for d in result.degradations}
+
+    def test_a_turn_that_answers_early_is_untouched(self) -> None:
+        registry, seen = self._registry(), []
+
+        def seam(messages: list[dict[str, Any]], *, tools: Any) -> ModelResponse:
+            seen.append(tools)
+            if len(seen) == 1:
+                return ModelResponse(
+                    content="",
+                    tool_calls=[ToolCall(id="c1", name="clock", arguments={})],
+                    completion_tokens=3,
+                )
+            return ModelResponse(content="השעה 12.", completion_tokens=3)
+
+        result = turn("מה השעה?", bind_tools(seam, registry), tools=registry, config=TurnConfig())
+        assert result.spoken == "השעה 12."
+        assert len(seen) == 2
+        assert all(seen)
+        assert result.degradations == ()
+
+    def test_no_tools_or_one_step_withholds_nothing(self) -> None:
+        seen: list[Any] = []
+        one = self._registry()
+        turn(
+            "מה השעה?",
+            bind_tools(self._obedient(seen), one),
+            tools=one,
+            config=TurnConfig(max_steps=1),
+        )
+        assert seen[0]["tools"]  # the only step keeps its tools
+        result = turn("שלום", Scripted(_says("שלום לך")), config=TurnConfig(max_steps=2))
+        assert result.degradations == ()
+
+    def test_a_hosts_wrapper_still_runs_on_the_withheld_step(self) -> None:
+        registry, seen, wrapped = self._registry(), [], []
+        bound = bind_tools(self._obedient(seen), registry)
+
+        def timed(messages: list[dict[str, Any]]) -> ModelResponse:
+            wrapped.append(len(messages))
+            return bound(messages)
+
+        setattr(timed, "__embodiment_bound_registry__", registry)
+        result = turn("מה השעה?", timed, tools=registry, config=TurnConfig(max_steps=3))
+        assert result.spoken == "השעה 12."
+        assert len(wrapped) == 3
+        assert seen[-1]["tools"] is None
+
+
+def test_tools_withheld_is_scoped_to_its_block() -> None:
+    registry, seen = ToolRegistry(), []
+    registry.register("clock", {"type": "object"}, lambda: "12:00")
+
+    def seam(messages: list[dict[str, Any]], *, tools: Any) -> ModelResponse:
+        seen.append(tools)
+        return ModelResponse(content="ok")
+
+    bound = bind_tools(seam, registry)
+    bound([])
+    with tools_withheld():
+        bound([])
+        with tools_withheld():
+            bound([])
+        bound([])
+    bound([])
+    assert [t is None for t in seen] == [False, True, True, True, False]

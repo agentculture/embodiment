@@ -14,7 +14,7 @@ from __future__ import annotations
 import argparse
 
 from embodiment.cli._output import emit_result
-from embodiment.mesh_client import MeshConfig
+from embodiment.mesh_client import ENV_AGENT_SECRET, MeshConfig
 
 __all__ = ["MESH_ENV", "build_report", "cmd_mesh", "register"]
 
@@ -25,16 +25,24 @@ MESH_ENV = (
     "EMBODIMENT_MESH_CHANNELS",
 )
 REPO_AGENT_NICK = "spark-embodiment"
+#: The systemd user unit culture names as spark-gwen's owner (culture#506).
+OWNER_UNIT = "embodiment-gwen.service"
 
 _STEPS = (
-    "Connecting needs no registration: agentirc accepts any client whose nick starts "
-    "with the server name, and Gwen's daemon holds the connection itself (no harness).",
-    "Listing Gwen as a resident agent in culture is pending a culture-side change "
-    "(an issue the operator will post). Until then: not yet supported.",
-    "What the operator would run once it lands: not yet supported (no command is "
-    "invented here).",
-    "If ever registered, her socket would be /run/user/<uid>/culture-spark-gwen.sock; "
-    "the repo's own agent is spark-embodiment (culture.yaml suffix embodiment).",
+    "Connecting: Gwen's daemon holds its own agentirc connection (no harness). Without an "
+    "account any client whose nick starts with the server name may register.",
+    "Residency (culture#506): culture lists spark-gwen as an external resident owned by "
+    f"{OWNER_UNIT}; she shows up from the PRESENCE her client publishes (MODE +A, "
+    "idle/thinking/draining). Check with: culture agents status",
+    "Account, the operator's acts (embodiment#121 part 2): 1. culture agents account "
+    "activate spark-gwen (prints a grant secret NAME, publishes nothing). 2. In "
+    f"{OWNER_UNIT}, wrap ExecStart as: grant run --inject {ENV_AGENT_SECRET}=<that name> "
+    "-- <daemon> (do not restart yet). 3. culture agents account activate spark-gwen "
+    "--owner-ready, then restart the unit.",
+    f"The daemon reads {ENV_AGENT_SECRET} once, removes it from its environment and logs "
+    "in with SASL PLAIN; a refused login stops only the mesh lane (status.mesh.sasl).",
+    "The repo's own agent is spark-embodiment (culture.yaml suffix embodiment); the two "
+    "share no nick, socket or culture.yaml entry.",
 )
 
 
@@ -50,7 +58,8 @@ def build_report() -> dict[str, object]:
         "channels": list(config.channels),
         "error": config.error,
         "env": list(MESH_ENV),
-        "registered_resident": False,
+        "account_env": ENV_AGENT_SECRET,
+        "owner_unit": OWNER_UNIT,
         "repo_agent_nick": REPO_AGENT_NICK,
         "registration_steps": list(_STEPS),
     }
@@ -66,6 +75,7 @@ def _render(r: dict[str, object]) -> str:
         "",
         "env names (names only):",
         *(f"  {n}" for n in MESH_ENV),
+        f"  {ENV_AGENT_SECRET}  (the account secret: injected by grant, read once)",
         "",
         "registration steps:",
         *(f"  {i}. {s}" for i, s in enumerate(_STEPS, 1)),

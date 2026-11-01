@@ -28,6 +28,7 @@ bool`` (in the daemon, a wrapper over ``MeshClient.create_thread``).
 from __future__ import annotations
 
 import json
+import re
 import threading
 from typing import Any, Callable, Optional
 
@@ -37,6 +38,11 @@ from embodiment.mesh_client import MeshConfig
 from embodiment.tools import ToolSpec
 
 __all__ = [
+    "CLAIM_CORRECTION_EN",
+    "CLAIM_CORRECTION_HE",
+    "claims_mesh_ask",
+    "explicit_mesh_request",
+    "strip_action_records",
     "ASK_TOOL",
     "CODES",
     "GUARDED_TOOLS",
@@ -98,6 +104,61 @@ _DESCRIPTION = (
     "answer arrives later. Only the question text is sent, nothing else from this "
     "conversation."
 )
+
+
+# ── the operator's request and Gwen's claim, read without a model (2026-11-01) ──
+#
+# The live run caught Gwen (senses) saying "I sent the question to spark-associate"
+# with no ask_culture call behind it. These two checks are fixed patterns, not a
+# model's judgement: one routes a turn the operator explicitly asked to put to the mesh
+# off senses (operator: "don't trust senses"), the other catches the claim when no ask
+# was posted. Both are deliberately narrow; a miss falls back to today's behaviour.
+
+#: What the mesh is called, in the words an operator or Gwen use.
+_MESH_WORDS = (
+    r"(?:culture|the mesh|mesh|culture chat|#[\w-]+|spark-[\w-]+|other agents|the agents"
+    r"|קלצ'ר|קולצ'ר|הרשת|הצ'אט|צ'אט|הסוכנים|סוכנים אחרים)"
+)
+_REQUEST_RE = re.compile(
+    r"(?:\b(?:please\s+)?(?:ask|post|put|send)\b|תשאלי|שאלי|תשאל|תשאלו|תשלחי|שלחי|תפרסמי)"
+    rf"[^.?!\n]{{0,60}}?{_MESH_WORDS}",
+    re.IGNORECASE,
+)
+_CLAIM_RE = re.compile(
+    # first person ("I sent", "שלחתי") and, as the live run showed both models write it,
+    # the passive ("the question was sent", "השאלה נשלחה")
+    r"(?:\bI(?:'ve| have)?\s+(?:just\s+)?(?:asked|sent|posted|forwarded|put)\b"
+    r"|\b(?:was|is|has been|have been|got)\s+(?:just\s+)?(?:sent|posted|asked|forwarded)\b"
+    r"|שלחתי|שאלתי|העברתי|פרסמתי|נשלחה|נשלח|נשאלה|הועברה|הועבר|פורסמה|פורסם)"
+    rf"[^.?!\n]{{0,80}}?{_MESH_WORDS}",
+    re.IGNORECASE,
+)
+#: A line in the daemon's own record format ("[done: ...]", see the window). Only the
+#: daemon writes it; a model that copies it into a reply has it removed (live run).
+_RECORD_LINE_RE = re.compile(r"^[ \t]*\[done:[^\]\n]*\][ \t]*\n?", re.MULTILINE)
+
+
+def strip_action_records(text: str) -> tuple[str, int]:
+    """*text* without lines in the daemon's ``[done: ...]`` record format, and how many."""
+    if not isinstance(text, str):
+        return text, 0
+    stripped, count = _RECORD_LINE_RE.subn("", text)
+    return (stripped.rstrip() if count else text), count
+
+
+#: Appended when Gwen claims an ask that was never posted this turn.
+CLAIM_CORRECTION_HE = "תיקון: בפועל לא נשלחה שום שאלה לצ'אט של Culture בתור הזה."
+CLAIM_CORRECTION_EN = "Correction: no question was actually sent to Culture chat in this turn."
+
+
+def explicit_mesh_request(text: str) -> bool:
+    """The operator's words ask Gwen to put something to the mesh (Hebrew or English)."""
+    return bool(isinstance(text, str) and _REQUEST_RE.search(text))
+
+
+def claims_mesh_ask(text: str) -> bool:
+    """A reply says Gwen asked / sent / posted something to the mesh (Hebrew or English)."""
+    return bool(isinstance(text, str) and _CLAIM_RE.search(text))
 
 
 def mesh_prompt_line(language: str = "he") -> str:

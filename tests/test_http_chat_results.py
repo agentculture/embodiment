@@ -93,3 +93,73 @@ def test_a_bad_shape_from_the_store_is_a_502() -> None:
         assert built.request("GET", f"/api/chat/{RID}", hdrs=built.headers())[0] == 502
     finally:
         built.server.shutdown(2.0)
+
+
+def _slow_chat(release: Any) -> Any:
+    def chat(*args: Any) -> dict[str, Any]:
+        release.wait(30)
+        return {"ok": True, "reply": "late"}
+
+    return chat
+
+
+def test_a_named_chat_past_the_clock_is_a_202_hand_off_not_a_degradation() -> None:
+    import threading
+
+    release = threading.Event()
+    store = lambda rid: {"state": "pending", "result": None}  # noqa: E731
+    built = build(
+        controls=s.Controls(chat=_slow_chat(release), chat_result=store), chat_timeout_s=0.3
+    )
+    try:
+        status, body = post_json(built, "/api/chat", {"message": "q", "request_id": RID})
+        assert status == 202
+        assert json.loads(body) == {"ok": True, "state": "pending", "request_id": RID}
+        server = built.server.status()
+        assert server["chats_handed_off"] == 1
+        assert server["controls_timed_out"] == 0
+        assert s.CONTROL_TIMEOUT_CODE not in server["degradation_counts"]
+    finally:
+        release.set()
+        built.server.shutdown(2.0)
+
+
+def test_an_unnamed_chat_past_the_clock_is_still_a_timeout() -> None:
+    import threading
+
+    release = threading.Event()
+    built = build(controls=s.Controls(chat=_slow_chat(release)), chat_timeout_s=0.3)
+    try:
+        status, body = post_json(built, "/api/chat", {"message": "q"})
+        assert status == 503
+        assert s.CONTROL_TIMEOUT_CODE.encode() in body
+        assert built.server.status()["chats_handed_off"] == 0
+    finally:
+        release.set()
+        built.server.shutdown(2.0)
+
+
+def test_a_named_chat_that_answers_in_time_is_a_plain_200() -> None:
+    built = build(controls=s.Controls(chat=lambda *a: {"ok": True, "reply": "r"}))
+    try:
+        status, body = post_json(built, "/api/chat", {"message": "q", "request_id": RID})
+        assert status == 200
+        assert json.loads(body)["reply"] == "r"
+        assert built.server.status()["chats_handed_off"] == 0
+    finally:
+        built.server.shutdown(2.0)
+
+
+def test_no_hand_off_without_a_result_store_to_fetch_it_from() -> None:
+    import threading
+
+    release = threading.Event()
+    built = build(controls=s.Controls(chat=_slow_chat(release)), chat_timeout_s=0.3)
+    try:
+        status, body = post_json(built, "/api/chat", {"message": "q", "request_id": RID})
+        assert status == 503  # a 202 here would leave the page polling a 503 forever
+        assert s.CONTROL_TIMEOUT_CODE.encode() in body
+        assert built.server.status()["chats_handed_off"] == 0
+    finally:
+        release.set()
+        built.server.shutdown(2.0)

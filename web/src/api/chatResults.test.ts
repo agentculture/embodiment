@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { CHAT_TIMEOUT_CODE, fetchChatResult, newRequestId, sendChat } from "./chat";
+import { CHAT_PENDING_CODE, CHAT_TIMEOUT_CODE, fetchChatResult, newRequestId, sendChat } from "./chat";
 import { addPending, loadPending, MAX_PENDING_CHATS, PENDING_CHATS_KEY, PENDING_MAX_AGE_MS, removePending } from "./pendingChats";
 
 const res = (status: number, body: unknown) =>
@@ -24,6 +24,8 @@ describe("a chat answer that outlives its request", () => {
   it("surfaces the route's timeout code so the page can wait instead", async () => {
     const out = await sendChat("q", "", { fetchFn: res(503, { error: { code: CHAT_TIMEOUT_CODE } }) });
     expect(out).toEqual({ ok: false, code: CHAT_TIMEOUT_CODE });
+    const handed = await sendChat("q", "", { fetchFn: res(202, { ok: true, state: "pending", request_id: "r" }) });
+    expect(handed).toEqual({ ok: false, code: CHAT_PENDING_CODE });
   });
 
   it("reads pending, unknown, a finished answer and a finished refusal", async () => {

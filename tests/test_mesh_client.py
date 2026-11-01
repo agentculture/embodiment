@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import re
 import threading
 import time
 from pathlib import Path
@@ -50,6 +51,12 @@ class FakeIrcd:
         self.answer_ping = True
         self.send_welcome = True
         self.who_members: dict[str, list[tuple[str, str]]] = {}  # chan -> [(nick, server)]
+        # SASL, as agentirc 9.14 answers it (docs/accounts.md): None = no account system
+        self.sasl_secret: Optional[str] = None  # the secret that logs in as the nick
+        self.offer_sasl = True
+        self.sasl_numeric = ""  # force a numeric instead of checking ("906", "908", ...)
+        self.ls_lines = 1  # CAP LS split over this many lines
+        self.payloads: list[str] = []
         self._writers: list[asyncio.StreamWriter] = []
         self._loop = asyncio.new_event_loop()
         self._server: Optional[asyncio.base_events.Server] = None
@@ -79,9 +86,25 @@ class FakeIrcd:
         self.connections += 1
         self._writers.append(writer)
         nick = ""
+        negotiating = False
+        held = False
+        chunks: list[str] = []
 
         def out(line: str) -> None:
             writer.write((line + "\r\n").encode())
+
+        def welcome() -> None:
+            out(f":{self.name} 001 {nick} :Welcome to {self.name} IRC Network")
+
+        def check_payload() -> bool:
+            import base64 as b64
+
+            self.payloads.append("".join(chunks))
+            try:
+                _, authcid, secret = b64.b64decode("".join(chunks)).decode().split("\0")
+            except ValueError:
+                return False
+            return authcid == nick and secret == self.sasl_secret
 
         try:
             while True:
@@ -92,16 +115,62 @@ class FakeIrcd:
                 self.lines.append(line)
                 parts = line.split(" ")
                 cmd = parts[0].upper()
-                if cmd == "CAP" and len(parts) > 1 and parts[1] == "REQ":
+                if cmd == "CAP" and len(parts) > 1 and parts[1] == "LS":
+                    negotiating = True
+                    caps = ["agentirc.io/bot", "message-tags"]
+                    if self.offer_sasl:
+                        caps.append("sasl=PLAIN")
+                    for i in range(self.ls_lines - 1):
+                        out(f":{self.name} CAP * LS * :{caps[i % len(caps)]}")
+                    out(f":{self.name} CAP * LS :{' '.join(caps)}")
+                elif cmd == "CAP" and len(parts) > 1 and parts[1] == "REQ":
+                    asked = line.split(":", 1)[1] if ":" in line else ""
                     verdict = "ACK" if self.ack_caps else "NAK"
-                    out(f":{self.name} CAP * {verdict} :message-tags")
+                    out(f":{self.name} CAP * {verdict} :{asked}")
+                elif cmd == "CAP" and len(parts) > 1 and parts[1] == "END":
+                    negotiating = False
+                    if held and nick:
+                        held = False
+                        welcome()
+                elif cmd == "AUTHENTICATE":
+                    arg = parts[1] if len(parts) > 1 else ""
+                    if arg == "PLAIN":
+                        if self.sasl_numeric:
+                            out(f":{self.name} {self.sasl_numeric} {nick} :refused")
+                            if self.sasl_numeric != "906":
+                                out("ERROR :Closing Link")
+                                await writer.drain()
+                                break
+                        else:
+                            out("AUTHENTICATE +")
+                    elif arg == "+" or len(arg) < 400:
+                        if arg != "+":
+                            chunks.append(arg)
+                        if check_payload():
+                            out(f":{self.name} 900 {nick} {nick}!gwen@127.0.0.1 {nick} :logged in")
+                            out(f":{self.name} 903 {nick} :SASL authentication successful")
+                        else:
+                            out(f":{self.name} 904 {nick} :SASL authentication failed")
+                            out("ERROR :Closing Link")
+                            await writer.drain()
+                            break
+                    else:
+                        chunks.append(arg)
                 elif cmd == "NICK":
                     nick = parts[1]
                     if self.nick_reply:
                         out(f":{self.name} {self.nick_reply} * {nick} :refused")
                         nick = ""
                 elif cmd == "USER" and nick and self.send_welcome:
-                    out(f":{self.name} 001 {nick} :Welcome to {self.name} IRC Network")
+                    if negotiating:
+                        held = True  # agentirc 9.14: no 001 until CAP END after CAP LS
+                    elif self.sasl_secret is not None and not chunks:
+                        out(f":{self.name} 904 {nick} :nick reserved")  # an account nick
+                        out("ERROR :Closing Link")
+                        await writer.drain()
+                        break
+                    else:
+                        welcome()
                 elif cmd == "JOIN":
                     out(f":{nick}!gwen@127.0.0.1 JOIN {parts[1]}")
                 elif cmd == "WHO":
@@ -657,8 +726,12 @@ def test_stdlib_only_and_no_subprocess():
     allowed = {
         "__future__",
         "asyncio",
+        "base64",  # the SASL PLAIN payload (#121 part 2)
         "collections",
+        "contextlib",  # PresenceGauge.busy (#121)
         "dataclasses",
+        "datetime",  # PRESENCE "since" (#121)
+        "json",  # the PRESENCE payload (#121)
         "os",
         "re",
         "threading",
@@ -737,3 +810,395 @@ def test_a_line_whose_drain_is_cancelled_is_a_dropped_send_not_lost(ircd: Any) -
     counts = client.status()["counts"]
     assert counts["sent"] == 0
     assert counts["dropped_sends"] == 1
+
+
+# ── presence (embodiment#121, culture protocol/extensions/presence.md) ──────
+
+
+def _presences(ircd: FakeIrcd) -> list[dict[str, Any]]:
+    import json
+
+    return [json.loads(line.split(" :", 1)[1]) for line in ircd.sent("PRESENCE ")]
+
+
+def test_registration_sets_mode_a_and_publishes_idle(ircd, started):
+    client = started(make_config(ircd))
+    wait_for(lambda: ircd.sent("PRESENCE "))
+    assert ircd.sent("MODE ") == ["MODE spark-gwen +A"]
+    first = _presences(ircd)[0]
+    assert first["state"] == "idle"
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", first["since"])
+    assert client.status()["presence"]["state"] == "idle"
+
+
+def test_mode_and_presence_come_before_join(ircd, started):
+    started(make_config(ircd))
+    wait_for(lambda: ircd.sent("JOIN "))
+    commands = [line.split(" ", 1)[0] for line in ircd.lines]
+    assert commands.index("MODE") < commands.index("JOIN")
+    assert commands.index("PRESENCE") < commands.index("JOIN")
+
+
+def test_a_state_change_is_published_once(ircd, started):
+    client = started(make_config(ircd))
+    wait_for(lambda: client.state == "registered" and ircd.sent("PRESENCE "))
+    assert client.set_presence("thinking") is True
+    assert client.set_presence("thinking") is True  # no change: nothing sent
+    wait_for(lambda: len(ircd.sent("PRESENCE ")) == 2)
+    time.sleep(0.1)
+    assert [p["state"] for p in _presences(ircd)] == ["idle", "thinking"]
+    wait_for(lambda: client.status()["counts"]["presence_sent"] == 2)
+
+
+def test_unknown_state_is_refused(ircd, started):
+    client = started(make_config(ircd))
+    assert client.set_presence("asleep") is False
+    assert client.status()["presence"]["state"] == "idle"
+
+
+def test_busy_state_heartbeats_with_its_own_since(ircd, started):
+    client = started(make_config(ircd, presence_heartbeat=0.1))
+    wait_for(lambda: client.state == "registered")
+    client.set_presence("thinking")
+    wait_for(lambda: len(ircd.sent("PRESENCE ")) >= 4)
+    beats = [p for p in _presences(ircd) if p["state"] == "thinking"]
+    assert len({p["since"] for p in beats}) == 1
+
+
+def test_idle_is_not_heartbeated(ircd, started):
+    client = started(make_config(ircd, presence_heartbeat=0.05))
+    wait_for(lambda: client.state == "registered" and ircd.sent("PRESENCE "))
+    time.sleep(0.3)
+    assert len(ircd.sent("PRESENCE ")) == 1
+
+
+def test_state_set_before_registration_is_the_first_published(ircd, started):
+    client = MeshClient(make_config(ircd))
+    client.set_presence("thinking")
+    client.start()
+    try:
+        wait_for(lambda: ircd.sent("PRESENCE "))
+        assert _presences(ircd)[0]["state"] == "thinking"
+    finally:
+        client.close(2.0)
+
+
+def test_graceful_close_sends_draining_before_quit(ircd, started):
+    client = started(make_config(ircd))
+    wait_for(lambda: client.state == "registered" and ircd.sent("PRESENCE "))
+    client.close(2.0)
+    wait_for(lambda: ircd.sent("QUIT"))
+    lines = list(ircd.lines)
+    drain = next(i for i, line in enumerate(lines) if '"draining"' in line)
+    assert drain < lines.index(next(line for line in lines if line.startswith("QUIT")))
+
+
+def test_a_server_without_presence_is_recorded_once(ircd, started):
+    client = started(make_config(ircd))
+    wait_for(lambda: client.state == "registered")
+    ircd.push(":spark 421 spark-gwen PRESENCE :Unknown command")
+    ircd.push(":spark 421 spark-gwen PRESENCE :Unknown command")
+    ircd.push(":spark 501 spark-gwen :Unknown MODE flag")
+    wait_for(lambda: any(d.code == "mesh-mode-refused" for d in client.degradations))
+    codes = [d.code for d in client.degradations]
+    assert codes.count("mesh-presence-unsupported") == 1
+    assert client.state == "registered"
+
+
+def test_a_421_for_another_command_is_not_a_presence_record(ircd, started):
+    client = started(make_config(ircd))
+    wait_for(lambda: client.state == "registered")
+    ircd.push(":spark 421 spark-gwen FOO :Unknown command")
+    ircd.push(":spark 501 spark-gwen :Unknown MODE flag")
+    wait_for(lambda: any(d.code == "mesh-mode-refused" for d in client.degradations))
+    assert all(d.code != "mesh-presence-unsupported" for d in client.degradations)
+
+
+class _Recorder:
+    def __init__(self, fail: bool = False) -> None:
+        self.states: list[str] = []
+        self.fail = fail
+
+    def set_presence(self, state: str) -> bool:
+        self.states.append(state)
+        if self.fail:
+            raise RuntimeError("boom")
+        return True
+
+
+def test_gauge_reports_edges_only_across_overlapping_calls():
+    gauge = mc.PresenceGauge()
+    rec = _Recorder()
+    gauge.attach(rec)
+    with gauge.busy():
+        with gauge.busy():
+            assert gauge.inflight == 2
+        assert gauge.inflight == 1
+    assert gauge.inflight == 0
+    assert rec.states == ["idle", "thinking", "idle"]
+
+
+def test_gauge_tells_a_late_client_the_current_state():
+    gauge = mc.PresenceGauge()
+    rec = _Recorder()
+    with gauge.busy():
+        gauge.attach(rec)
+    assert rec.states == ["thinking", "idle"]
+
+
+def test_gauge_without_a_client_is_a_no_op():
+    gauge = mc.PresenceGauge()
+    with gauge.busy():
+        pass
+    assert gauge.inflight == 0
+
+
+def test_gauge_counts_a_raising_client_and_never_raises():
+    gauge = mc.PresenceGauge()
+    rec = _Recorder()
+    gauge.attach(rec)
+    rec.fail = True
+    with gauge.busy():
+        pass
+    assert gauge.failures == 2
+    assert gauge.inflight == 0
+
+
+def test_gauge_releases_on_an_exception_inside():
+    gauge = mc.PresenceGauge()
+    rec = _Recorder()
+    gauge.attach(rec)
+
+    def failing_completion() -> None:
+        with gauge.busy():
+            raise ValueError("completion failed")
+
+    with pytest.raises(ValueError):
+        failing_completion()
+    assert rec.states[-1] == "idle"
+    assert gauge.inflight == 0
+
+
+def test_presence_reader_counts_lines_sent(ircd, started):
+    client = started(make_config(ircd))
+    wait_for(lambda: client.presence()["sent"] == 1)
+    assert client.presence()["state"] == "idle"
+
+
+def test_queued_presence_lines_are_not_dropped_sends():
+    queue: asyncio.Queue[str] = asyncio.Queue()
+    for line in ("PRESENCE :{}", "PRIVMSG #general :hi", "THREAD CREATE #g t :x", "PRESENCE :{}"):
+        queue.put_nowait(line)
+    assert mc._unsent_messages(queue) == 2
+    assert queue.empty()
+
+
+def test_after_a_421_the_connection_publishes_no_more_presence(ircd, started):
+    client = started(make_config(ircd, presence_heartbeat=0.05))
+    wait_for(lambda: client.state == "registered" and ircd.sent("PRESENCE "))
+    ircd.push(":spark 421 spark-gwen PRESENCE :Unknown command")
+    wait_for(lambda: any(d.code == "mesh-presence-unsupported" for d in client.degradations))
+    before = len(ircd.sent("PRESENCE "))
+    client.set_presence("thinking")
+    time.sleep(0.3)
+    assert len(ircd.sent("PRESENCE ")) == before
+    client.close(2.0)
+    wait_for(lambda: ircd.sent("QUIT"))
+    assert len(ircd.sent("PRESENCE ")) == before  # no draining either
+
+
+def test_gauge_tells_the_client_while_holding_its_lock():
+    gauge = mc.PresenceGauge()
+    held: list[bool] = []
+
+    class Client:
+        def set_presence(self, state: str) -> bool:
+            held.append(gauge._lock.locked())
+            return True
+
+    gauge.attach(Client())
+    with gauge.busy():
+        pass
+    assert held == [True, True, True]
+
+
+def test_gauge_edges_from_many_threads_end_on_the_true_state():
+    gauge = mc.PresenceGauge()
+    rec = _Recorder()
+    gauge.attach(rec)
+
+    def work() -> None:
+        for _ in range(200):
+            with gauge.busy():
+                pass
+
+    threads = [threading.Thread(target=work) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert gauge.inflight == 0
+    assert rec.states[-1] == "idle"
+    # strictly alternating: every edge was told in the order it happened
+    assert all(a != b for a, b in zip(rec.states[1:], rec.states[2:]))
+
+
+# ── SASL PLAIN (embodiment#121 part 2; agentirc 9.14 docs/accounts.md) ─────────
+
+SECRET = "s3cret-for-tests-0123456789abcdef"
+
+
+def test_without_a_secret_the_wire_is_unchanged(ircd, started):
+    client = started(make_config(ircd))
+    wait_for(lambda: client.state == "registered")
+    assert ircd.lines[:4] == [
+        "CAP REQ :message-tags",
+        "NICK spark-gwen",
+        "USER gwen 0 * :Gwen",
+        "CAP END",
+    ]
+    assert not ircd.sent("AUTHENTICATE")
+    assert client.sasl_state == "off"
+
+
+def test_a_secret_logs_in_before_registration(ircd, started):
+    ircd.sasl_secret = SECRET
+    client = started(make_config(ircd, sasl_secret=SECRET))
+    wait_for(lambda: client.state == "registered")
+    assert client.sasl_state == "authenticated"
+    assert client.status()["sasl"] == "authenticated"
+    assert ircd.lines[:3] == ["CAP LS 302", "NICK spark-gwen", "USER gwen 0 * :Gwen"]
+    order = [line.split(" :")[0] for line in ircd.lines]
+    assert order.index("AUTHENTICATE PLAIN") < order.index("CAP END")
+    assert "CAP REQ :sasl message-tags" in ircd.lines
+    assert client.status()["message_tags"] is True
+    wait_for(lambda: ircd.sent("JOIN "))
+
+
+def test_the_payload_is_nul_nick_nul_secret(ircd, started):
+    import base64
+
+    ircd.sasl_secret = SECRET
+    client = started(make_config(ircd, sasl_secret=SECRET))
+    wait_for(lambda: client.state == "registered")
+    assert base64.b64decode(ircd.payloads[0]) == b"\0spark-gwen\0" + SECRET.encode()
+
+
+def test_a_wrong_secret_is_permanent_and_never_retried(ircd, started):
+    ircd.sasl_secret = "the-real-one"
+    client = started(make_config(ircd, sasl_secret="a-stale-one"))
+    wait_for(lambda: client.state == "sasl-refused")
+    assert client.sasl_state == "refused"
+    assert any(d.code == "mesh-sasl-refused" for d in client.degradations)
+    time.sleep(0.4)  # backoff_max is 0.2: a retry would have connected again
+    assert ircd.connections == 1
+
+
+@pytest.mark.parametrize("numeric", ["902", "905", "908"])
+def test_each_permanent_numeric_stops_the_lane(ircd, started, numeric):
+    ircd.sasl_secret = SECRET
+    ircd.sasl_numeric = numeric
+    client = started(make_config(ircd, sasl_secret=SECRET))
+    wait_for(lambda: client.state == "sasl-refused")
+    assert ircd.connections == 1
+
+
+def test_an_abort_is_retried(ircd, started):
+    ircd.sasl_secret = SECRET
+    ircd.sasl_numeric = "906"
+    client = started(make_config(ircd, sasl_secret=SECRET))
+    wait_for(lambda: ircd.connections >= 2)
+    assert any(d.code == "mesh-sasl-aborted" for d in client.degradations)
+    ircd.sasl_numeric = ""
+    wait_for(lambda: client.state == "registered")
+    assert client.sasl_state == "authenticated"
+
+
+def test_a_server_without_sasl_is_joined_as_before_and_recorded(ircd, started):
+    ircd.offer_sasl = False
+    client = started(make_config(ircd, sasl_secret=SECRET))
+    wait_for(lambda: client.state == "registered")
+    assert client.sasl_state == "unavailable"
+    assert any(d.code == "mesh-sasl-unavailable" for d in client.degradations)
+    assert not ircd.sent("AUTHENTICATE")
+
+
+def test_a_multi_line_cap_ls_is_read_whole(ircd, started):
+    ircd.sasl_secret = SECRET
+    ircd.ls_lines = 3
+    client = started(make_config(ircd, sasl_secret=SECRET))
+    wait_for(lambda: client.state == "registered")
+    assert len(ircd.sent("CAP REQ")) == 1
+    assert client.sasl_state == "authenticated"
+
+
+def test_a_reserved_nick_without_a_secret_stops_instead_of_looping(ircd, started):
+    ircd.sasl_secret = SECRET  # the nick has an account; this daemon has no secret
+    client = started(make_config(ircd))
+    wait_for(lambda: client.state == "sasl-refused")
+    # The server closes with our CAP END unread, so the kernel may RESET the socket and
+    # drop the 904 before it is read (that attempt reads as a failed connect and is
+    # retried). The guarantee: once a 904 is read, no further attempt.
+    seen = ircd.connections
+    time.sleep(0.4)
+    assert ircd.connections == seen
+
+
+def test_the_secret_is_never_shown():
+    config = MeshConfig(sasl_secret=SECRET)
+    assert SECRET not in repr(config)
+    client = MeshClient(config)
+    assert SECRET not in repr(client)
+    assert SECRET not in str(client.status())
+    assert config == MeshConfig()  # never compared either
+
+
+def test_take_agent_secret_removes_it_from_the_environment():
+    env = {mc.ENV_AGENT_SECRET: f"  {SECRET}\n", "OTHER": "x"}
+    assert mc.take_agent_secret(env) == SECRET
+    assert env == {"OTHER": "x"}
+    assert mc.take_agent_secret(env) == ""
+
+
+def test_from_env_never_reads_the_secret():
+    config = MeshConfig.from_env({mc.ENV_AGENT_SECRET: SECRET})
+    assert config.sasl_secret == ""
+
+
+@pytest.mark.parametrize("length", [1, 290, 300, 301, 600])
+def test_payload_chunking_follows_the_400_rule(length):
+    import base64
+
+    lines = mc.sasl_plain_lines("spark-gwen", "s" * length)
+    pieces = [line.split(" ", 1)[1] for line in lines]
+    assert all(len(p) <= 400 for p in pieces)
+    data = "".join(p for p in pieces if p != "+")
+    assert base64.b64decode(data) == b"\0spark-gwen\0" + b"s" * length
+    if len(data) % 400 == 0:
+        assert pieces[-1] == "+"
+    else:
+        assert len(pieces[-1]) < 400
+
+
+def test_once_records_stay_once_across_reconnects(ircd, started):
+    client = started(make_config(ircd))
+    for _ in range(3):
+        wait_for(lambda: client.state == "registered")
+        ircd.push(":spark 421 spark-gwen PRESENCE :Unknown command")
+        ircd.push(":spark 501 spark-gwen :Unknown MODE flag")
+        wait_for(lambda: any(d.code == "mesh-mode-refused" for d in client.degradations))
+        before = ircd.connections
+        ircd.drop_all()
+        wait_for(lambda: ircd.connections > before)
+    codes = [d.code for d in client.degradations]
+    assert codes.count("mesh-presence-unsupported") == 1
+    assert codes.count("mesh-mode-refused") == 1
+
+
+def test_the_draining_line_is_counted(ircd, started):
+    client = started(make_config(ircd))
+    wait_for(lambda: client.presence()["sent"] == 1)
+    client.close(2.0)
+    wait_for(lambda: ircd.sent("QUIT"))
+    assert client.presence()["sent"] == 2
+    assert client.presence()["state"] == "draining"

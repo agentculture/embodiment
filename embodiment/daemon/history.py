@@ -229,6 +229,12 @@ def _turns(path: Path) -> list[dict[str, Any]]:
                 "recording": _recording(row.get("recording")),
                 "timestamps": _stamps(row.get("timestamps")),
                 "mesh_agent": _mesh_agent(row),
+                # what the turn DID (tool outcomes), restored into the window with it
+                "actions": (
+                    [a for a in row.get("actions") or [] if isinstance(a, str)][:8]
+                    if isinstance(row.get("actions"), list)
+                    else []
+                ),
             }
         )
     return turns

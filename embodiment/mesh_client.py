@@ -42,6 +42,36 @@ The wire, as agentirc answers it (read from ``agentirc/client.py`` and
   outbound line is chunked under it, CRLF included. Text never reaches the wire
   with a CR, LF or NUL in it: each line becomes its own message.
 
+* **Presence** (culture ``protocol/extensions/presence.md``; agentirc
+  ``skills/presence.py``; asked in embodiment#121). After ``001`` the client sets
+  user mode ``+A`` — agentirc flips a row to ``offline`` on a TCP close only for a
+  ``+A``/``+C`` client, so without it a crashed daemon stays listed in its last
+  state — and publishes ``PRESENCE :{"state": ..., "since": ...}``, again on every
+  state change. The state comes only from code boundaries, never from a model:
+  :class:`PresenceGauge` holds ``thinking`` while any completion through the
+  daemon's chat seam is in flight and ``idle`` otherwise; a graceful close sends
+  ``draining`` before ``QUIT``. ``offline`` is the server's to set. A server that
+  answers ``421`` to ``PRESENCE`` or ``501`` to the mode is recorded once
+  (``mesh-presence-unsupported`` / ``mesh-mode-refused``); after a ``421`` that
+  connection publishes no more PRESENCE, and the client goes on.
+
+* **Account (SASL PLAIN; agentirc 9.14 ``docs/accounts.md``; embodiment#121 part 2).**
+  With a secret configured (:data:`ENV_AGENT_SECRET`, taken out of the
+  environment once by :func:`take_agent_secret`), the client opens with
+  ``CAP LS 302``, sends NICK and USER, asks ``CAP REQ :sasl message-tags``,
+  answers ``AUTHENTICATE +`` with ``base64("\\0<nick>\\0<secret>")`` in
+  400-byte chunks, and sends ``CAP END`` on ``903``; the server holds ``001``
+  until then. ``904``/``905``/``908``/``902`` are permanent: ``mesh-sasl-refused``,
+  and the client stays off until the daemon restarts (culture's own agents exit
+  78; Gwen's daemon keeps her voice and page, so only the mesh lane stops). ``906``
+  (aborted) is retried with the usual backoff. A server that does not advertise
+  ``sasl`` records ``mesh-sasl-unavailable`` once and is joined as before (no flag
+  day). Without a secret the wire is byte-identical to the unauthenticated one.
+  The secret is never in a record, a status, a ``repr`` or a log. One limit of
+  delivery by environment, which is culture's contract: removing it keeps children
+  from inheriting it, but the kernel's copy in ``/proc/<pid>/environ`` keeps the
+  value it started with, readable by processes of the same user.
+
 Clocks, each derived from what it bounds:
 
 * ``connect_deadline`` bounds the TCP connect, ``register_deadline`` the wait
@@ -54,6 +84,10 @@ Clocks, each derived from what it bounds:
   client after 60 s and reaps it at 180 s, so a client that never sent its own
   PING would learn of a silently dead server only from the kernel; the client
   side bound is :attr:`MeshConfig.liveness_bound`.
+* ``presence_heartbeat`` re-sends a busy state's PRESENCE. agentirc's
+  ``heartbeat_interval_seconds`` defaults to 30 and its stale threshold to 90 (a
+  busy row older than that is flagged ``presumed_hung``), so 25 s keeps a row
+  fresh with one beat of slack. ``idle`` never goes stale and is not re-sent.
 
 Degrade, never raise: a refused connect, a drop, a timeout, a failing
 callback — each is a :class:`MeshDegradation` on a bounded ledger and a
@@ -65,13 +99,17 @@ text, a nick a remote party chose, or a secret.
 from __future__ import annotations
 
 import asyncio
+import base64
+import contextlib
+import datetime
+import json
 import os
 import re
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass, replace
-from typing import Any, Callable, Mapping, Optional
+from dataclasses import dataclass, field, replace
+from typing import Any, Callable, Iterator, Mapping, Optional
 
 from embodiment.safe_reason import describe_exception
 
@@ -79,11 +117,14 @@ __all__ = [
     "DEFAULT_CHANNELS",
     "DEFAULT_NICK",
     "DEFAULT_SERVER",
+    "ENV_AGENT_SECRET",
     "ENV_CHANNELS",
     "ENV_MESH",
     "ENV_NICK",
     "ENV_SERVER",
     "MAX_LINE_BYTES",
+    "PRESENCE_BUSY",
+    "PRESENCE_STATES",
     "THREAD_NAME_RE",
     "IrcLine",
     "MeshClient",
@@ -91,13 +132,18 @@ __all__ = [
     "MeshConfig",
     "MeshDegradation",
     "MeshMessage",
+    "PresenceGauge",
     "parse_line",
+    "take_agent_secret",
 ]
 
 ENV_MESH = "EMBODIMENT_MESH"
 ENV_NICK = "EMBODIMENT_MESH_NICK"
 ENV_SERVER = "EMBODIMENT_MESH_SERVER"
 ENV_CHANNELS = "EMBODIMENT_MESH_CHANNELS"
+#: Gwen's mesh account secret, injected by ``grant run --inject`` in her unit
+#: (culture#506). Read ONCE and removed from the environment: :func:`take_agent_secret`.
+ENV_AGENT_SECRET = "CULTURE_AGENT_SECRET"  # nosec B105 - an env var NAME, not a secret
 
 DEFAULT_NICK = "spark-gwen"
 DEFAULT_SERVER = "localhost:6667"
@@ -126,7 +172,53 @@ _QUIET_ENDINGS = (
     ValueError,
 )
 
-_TERMINAL = frozenset({"nick-taken", "nick-refused", "stopped"})
+_TERMINAL = frozenset({"nick-taken", "nick-refused", "sasl-refused", "stopped"})
+#: Numerics that end a SASL attempt for good (agentirc closes the connection after them).
+_SASL_PERMANENT = frozenset({"902", "904", "905", "908"})
+#: IRCv3 SASL's chunk size: a chunk of exactly this length means more follows.
+SASL_CHUNK = 400
+
+
+def take_agent_secret(env: Optional[Any] = None) -> str:
+    """Remove :data:`ENV_AGENT_SECRET` from *env* (``os.environ``) and return it, stripped.
+
+    Called once at the top of the daemon's ``main()``, before any child process is
+    started, so no child ever inherits it (culture#506, embodiment#121)."""
+    target = os.environ if env is None else env
+    value = target.pop(ENV_AGENT_SECRET, "") or ""
+    return value.strip()
+
+
+def sasl_plain_lines(nick: str, secret: str) -> list[str]:
+    """The ``AUTHENTICATE`` lines carrying PLAIN's ``\\0<nick>\\0<secret>``, 400-chunked."""
+    payload = base64.b64encode(b"\0" + nick.encode() + b"\0" + secret.encode()).decode("ascii")
+    chunks = [payload[i : i + SASL_CHUNK] for i in range(0, len(payload), SASL_CHUNK)]
+    lines = [f"AUTHENTICATE {chunk}" for chunk in chunks]
+    if len(payload) % SASL_CHUNK == 0:
+        lines.append("AUTHENTICATE +")  # a payload that is a multiple of 400 ends with "+"
+    return lines
+
+
+#: The six states of culture's PRESENCE contract (``protocol/extensions/presence.md``).
+PRESENCE_STATES = ("idle", "listening", "thinking", "working", "draining", "offline")
+#: The states agentirc flags ``presumed_hung`` when their heartbeat stops.
+PRESENCE_BUSY = frozenset({"listening", "thinking", "working", "draining"})
+
+
+def _unsent_messages(outbox: "asyncio.Queue[str]") -> int:
+    """Empty *outbox*; the message lines in it (PRIVMSG/THREAD). A queued PRESENCE line
+    is not a lost message, so it is not a dropped send."""
+    left = 0
+    while not outbox.empty():
+        if outbox.get_nowait().startswith(("PRIVMSG", "THREAD")):
+            left += 1
+    return left
+
+
+def _utc_now() -> str:
+    """ISO-8601 UTC at second precision with ``Z``, the form agentirc stamps itself."""
+    now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+    return now.isoformat().replace("+00:00", "Z")
 
 
 # ── values ──────────────────────────────────────────────────────────────────
@@ -217,10 +309,15 @@ class MeshConfig:
     backoff_max: float = 30.0
     ping_interval: float = 60.0
     ping_timeout: float = 30.0
+    #: Under agentirc's 30 s ``heartbeat_interval_seconds`` (stale at 90 s).
+    presence_heartbeat: float = 25.0
     close_deadline: float = 3.0
     #: A configuration problem found by :meth:`from_env`; the client records it
     #: and stays off rather than raising.
     error: str = ""
+    #: The mesh account secret (SASL PLAIN). Never read by :meth:`from_env` (pass it
+    #: from :func:`take_agent_secret`), never in ``repr``, never compared.
+    sasl_secret: str = field(default="", repr=False, compare=False)
 
     @property
     def reconnect_bound(self) -> float:
@@ -394,6 +491,9 @@ class MeshClient:
         self._state = "off" if not config.enabled else "idle"
         self._ledger: deque[MeshDegradation] = deque(maxlen=_LEDGER_MAX)
         self._streak: set[str] = set()
+        #: Codes recorded once per CLIENT: unlike the streak, a reconnect does not clear
+        #: it, so a flapping link cannot refill the bounded ledger (review #2 of #122).
+        self._once: set[str] = set()
         self._counts = {
             "connect_attempts": 0,
             "registrations": 0,
@@ -402,7 +502,16 @@ class MeshClient:
             "received": 0,
             "delivered": 0,
             "dropped_sends": 0,
+            "presence_sent": 0,
         }
+        self._presence = ("idle", _utc_now())
+        self._presence_wake: Optional[asyncio.Event] = None
+        #: "off" (no secret), "pending", "authenticated", "unavailable" or "refused".
+        self._sasl = "pending" if config.sasl_secret else "off"
+        self._sasl_phase = ""
+        self._sasl_caps: list[str] = []
+        #: Set by a ``421 PRESENCE``; reset on each new connection.
+        self._presence_unsupported = False
         self._joined: set[str] = set()
         self._server_name = ""
         self._who_done: dict[str, frozenset[str]] = {}
@@ -456,6 +565,8 @@ class MeshClient:
                 "joined": sorted(self._joined),
                 "servers": list(servers),
                 "message_tags": self._message_tags,
+                "presence": {"state": self._presence[0], "since": self._presence[1]},
+                "sasl": self._sasl,
                 "counts": dict(self._counts),
                 "reconnect_bound": self._config.reconnect_bound,
                 "liveness_bound": self._config.liveness_bound,
@@ -472,6 +583,14 @@ class MeshClient:
                 if code in self._streak:
                     return
                 self._streak.add(code)
+            self._ledger.append(MeshDegradation(code, reason))
+
+    def _record_once(self, code: str, reason: str = "") -> None:
+        """Record *code* the first time this client sees it, never again."""
+        with self._lock:
+            if code in self._once:
+                return
+            self._once.add(code)
             self._ledger.append(MeshDegradation(code, reason))
 
     def _set_state(self, state: str) -> None:
@@ -555,6 +674,58 @@ class MeshClient:
                 )
         except Exception:  # noqa: BLE001  # close never raises
             return MeshCloseReport(close_error=True)
+
+    # ── presence (any thread) ──────────────────────────────────────────────
+    def set_presence(self, state: str) -> bool:
+        """Publish *state* (one of :data:`PRESENCE_STATES`). ``False``: unknown state.
+
+        The same state twice is no change and sends nothing (edge-triggered); a
+        new one is sent now if registered, else after the next ``001``."""
+        if state not in PRESENCE_STATES:
+            return False
+        with self._lock:
+            if self._presence[0] == state:
+                return True
+            self._presence = (state, _utc_now())
+            loop, wake = self._loop, self._presence_wake
+        if loop is not None and wake is not None:
+            try:
+                loop.call_soon_threadsafe(wake.set)
+            except RuntimeError:  # loop closed: the next session publishes it
+                pass
+        return True
+
+    @property
+    def sasl_state(self) -> str:
+        """``off`` (no secret), ``pending``, ``authenticated``, ``unavailable``, ``refused``."""
+        with self._lock:
+            return self._sasl
+
+    def presence(self) -> dict[str, Any]:
+        """What was last set to publish: ``state``, ``since``, and lines ``sent``."""
+        with self._lock:
+            state, since = self._presence
+            return {"state": state, "since": since, "sent": self._counts["presence_sent"]}
+
+    def _presence_line(self) -> str:
+        with self._lock:
+            state, since = self._presence
+        payload = json.dumps({"state": state, "since": since}, separators=(",", ":"))
+        return f"PRESENCE :{payload}"
+
+    async def _beat(self, outbox: "asyncio.Queue[str]", wake: asyncio.Event) -> None:
+        """Send PRESENCE on each change, and every ``presence_heartbeat`` while busy."""
+        while True:
+            with self._lock:
+                busy = self._presence[0] in PRESENCE_BUSY
+            timeout = float(self._config.presence_heartbeat) if busy else None
+            try:
+                await asyncio.wait_for(wake.wait(), timeout=timeout)
+            except TimeoutError:
+                pass
+            wake.clear()
+            if not self._presence_unsupported:
+                outbox.put_nowait(self._presence_line())
 
     # ── send (any thread) ──────────────────────────────────────────────────
     def send(self, target: str, text: str) -> bool:
@@ -663,29 +834,51 @@ class MeshClient:
         self._writer = writer
         registered = False
         try:
-            writer.write(b"CAP REQ :message-tags\r\n")
-            writer.write(f"NICK {cfg.nick}\r\n".encode())
-            writer.write(b"USER gwen 0 * :Gwen\r\n")
-            writer.write(b"CAP END\r\n")
+            self._open(writer)
             await writer.drain()
             await self._register(reader, writer)
             registered = True
             await self._run_registered(reader, writer)
             return "stopped"
         except _Dropped as drop:
-            if drop.code in ("nick-taken", "nick-refused", "stopped"):
-                if drop.code != "stopped":
-                    self._set_state(drop.code)
-                    self._record(f"mesh-{drop.code}", drop.reason)
-                return drop.code
-            self._record(f"mesh-{drop.code}", drop.reason, streak=not registered)
-            return "registered" if registered else "failed"
+            return self._dropped(drop, registered)
         except (OSError, ValueError, asyncio.IncompleteReadError) as exc:
             code = "mesh-connection-dropped" if registered else "mesh-connect-failed"
             self._record(code, describe_exception(exc), streak=not registered)
             return "registered" if registered else "failed"
         finally:
             await self._teardown(writer, quit_first=registered and stop.is_set())
+
+    def _open(self, writer: asyncio.StreamWriter) -> None:
+        """The opening lines. With a secret, IRCv3 negotiation: the server holds 001
+        until CAP END (agentirc 9.14). Without one, byte-identical to before SASL."""
+        cfg = self._config
+        if cfg.sasl_secret:
+            self._sasl_phase, self._sasl_caps = "ls", []
+            with self._lock:
+                if self._sasl != "refused":
+                    self._sasl = "pending"
+            writer.write(b"CAP LS 302\r\n")
+            writer.write(f"NICK {cfg.nick}\r\n".encode())
+            writer.write(b"USER gwen 0 * :Gwen\r\n")
+            return
+        writer.write(b"CAP REQ :message-tags\r\n")
+        writer.write(f"NICK {cfg.nick}\r\n".encode())
+        writer.write(b"USER gwen 0 * :Gwen\r\n")
+        writer.write(b"CAP END\r\n")
+
+    def _dropped(self, drop: "_Dropped", registered: bool) -> str:
+        """How a session that raised ``_Dropped`` ended: terminal codes stop the lane."""
+        if drop.code not in _TERMINAL:
+            self._record(f"mesh-{drop.code}", drop.reason, streak=not registered)
+            return "registered" if registered else "failed"
+        if drop.code == "sasl-refused":
+            with self._lock:
+                self._sasl = "refused"
+        if drop.code != "stopped":
+            self._set_state(drop.code)
+            self._record(f"mesh-{drop.code}", drop.reason)
+        return drop.code
 
     async def _readline(self, reader: asyncio.StreamReader, wait_s: float) -> Optional[str]:
         """One line, or ``None`` after *wait_s*; EOF raises ``_Dropped``; stop raises it too."""
@@ -723,16 +916,86 @@ class MeshClient:
             if raw is None:
                 continue
             msg = parse_line(raw)
-            if msg is None:
-                continue
-            if msg.command == "001":
-                self._on_welcome(msg)
+            if msg is not None and self._register_line(msg, writer):
                 return
-            if msg.command == "433":
-                raise _Dropped("nick-taken", "433 ERR_NICKNAMEINUSE")
-            if msg.command == "432":
-                raise _Dropped("nick-refused", "432 ERR_ERRONEUSNICKNAME")
-            self._handle_common(msg, writer)
+
+    def _register_line(self, msg: IrcLine, writer: asyncio.StreamWriter) -> bool:
+        """One line before 001; ``True`` on 001. Refusals raise ``_Dropped``."""
+        command = msg.command
+        if command == "001":
+            self._on_welcome(msg)
+            return True
+        if command == "433":
+            raise _Dropped("nick-taken", "433 ERR_NICKNAMEINUSE")
+        if command == "432":
+            raise _Dropped("nick-refused", "432 ERR_ERRONEUSNICKNAME")
+        if self._sasl_phase and self._sasl_step(msg, writer):
+            return False
+        if command in _SASL_PERMANENT and not self._config.sasl_secret:
+            # The nick now has an account and this daemon holds no secret: retrying
+            # would only feed the server's failure limiter.
+            raise _Dropped("sasl-refused", f"{command}: the nick needs an account")
+        self._handle_common(msg, writer)
+        return False
+
+    # ── SASL PLAIN (embodiment#121 part 2) ─────────────────────────────────
+    def _sasl_step(self, msg: IrcLine, writer: asyncio.StreamWriter) -> bool:
+        """One negotiation line; ``True`` when it was SASL's. Raises ``_Dropped`` on a
+        refusal: permanent numerics end the lane, ``906`` (aborted) is retried."""
+        command = msg.command
+        if command in _SASL_PERMANENT:
+            self._sasl_phase = ""
+            raise _Dropped("sasl-refused", f"{command} from the server")
+        if command == "906":
+            self._sasl_phase = ""
+            raise _Dropped("sasl-aborted", "906 ERR_SASLABORTED")
+        if command == "CAP" and len(msg.params) >= 3:
+            return self._sasl_cap(msg, writer)
+        if command == "AUTHENTICATE" and self._sasl_phase == "auth":
+            if msg.params and msg.params[0] == "+":
+                for line in sasl_plain_lines(self._config.nick, self._config.sasl_secret):
+                    writer.write((line + "\r\n").encode("ascii"))
+            return True
+        if command == "903":
+            self._sasl_phase = ""
+            with self._lock:
+                self._sasl = "authenticated"
+            writer.write(b"CAP END\r\n")
+            return True
+        return command == "900"  # "you are now logged in as": nothing to do
+
+    def _sasl_cap(self, msg: IrcLine, writer: asyncio.StreamWriter) -> bool:
+        sub_command = msg.params[1].upper()
+        if sub_command == "LS" and self._sasl_phase == "ls":
+            self._sasl_caps.extend(msg.params[-1].split())
+            if len(msg.params) >= 4 and msg.params[2] == "*":
+                return True  # a multi-line LS: more follows
+            offered = any(c == "sasl" or c.startswith("sasl=") for c in self._sasl_caps)
+            if offered:
+                self._sasl_phase = "req"
+                writer.write(b"CAP REQ :sasl message-tags\r\n")
+            else:
+                self._sasl_without()
+                writer.write(b"CAP REQ :message-tags\r\nCAP END\r\n")
+            return True
+        if sub_command == "ACK" and self._sasl_phase == "req":
+            self._on_cap(msg)
+            if "sasl" in msg.params[2].split():
+                self._sasl_phase = "auth"
+                writer.write(b"AUTHENTICATE PLAIN\r\n")
+            return True
+        if sub_command == "NAK" and self._sasl_phase == "req":
+            self._sasl_without()
+            writer.write(b"CAP REQ :message-tags\r\nCAP END\r\n")
+            return True
+        return False
+
+    def _sasl_without(self) -> None:
+        """The server offers no SASL: join unauthenticated, as before (no flag day)."""
+        self._sasl_phase = ""
+        with self._lock:
+            self._sasl = "unavailable"
+        self._record_once("mesh-sasl-unavailable", "the server does not offer sasl")
 
     def _on_welcome(self, msg: IrcLine) -> None:
         """001: registered. Counted (a second one is a reconnect); the streak resets."""
@@ -750,15 +1013,28 @@ class MeshClient:
     ) -> None:
         outbox: asyncio.Queue[str] = asyncio.Queue()
         self._outbox = outbox
+        wake = asyncio.Event()
+        self._presence_wake = wake  # before the first line, so no change falls between
+        self._presence_unsupported = False
+        writer.write(f"MODE {self._config.nick} +A\r\n".encode())
+        writer.write((self._presence_line() + "\r\n").encode("utf-8"))
+        self._count("presence_sent")
         for channel in self._config.channels:
             writer.write(f"JOIN {channel}\r\n".encode())
         await writer.drain()
         pump = asyncio.ensure_future(self._pump(outbox, writer))
+        beat = asyncio.ensure_future(self._beat(outbox, wake))
         try:
             await self._read_registered(reader, writer, pump)
         finally:
+            self._presence_wake = None
+            beat.cancel()
+            try:
+                await beat
+            except _QUIET_ENDINGS:
+                pass
             self._outbox = None
-            left = outbox.qsize()
+            left = _unsent_messages(outbox)
             if left:
                 self._count("dropped_sends", left)
             pump.cancel()
@@ -775,6 +1051,7 @@ class MeshClient:
         while True:
             line = await outbox.get()
             counted = line.startswith(("PRIVMSG", "THREAD"))
+            presence = line.startswith("PRESENCE ")
             try:
                 writer.write((line + "\r\n").encode("utf-8"))
                 await writer.drain()
@@ -784,6 +1061,8 @@ class MeshClient:
                 raise
             if counted:
                 self._count("sent")
+            elif presence:
+                self._count("presence_sent")
 
     async def _read_registered(
         self,
@@ -830,10 +1109,17 @@ class MeshClient:
             "352": (5, lambda: self._on_who_reply(msg)),
             "315": (2, lambda: self._on_who_end(msg)),
             "PRIVMSG": (2, lambda: self._deliver(msg)),
+            "421": (2, lambda: self._on_unknown_command(msg)),
+            "501": (1, lambda: self._record_once("mesh-mode-refused", "501")),
         }
         entry = handlers.get(command)
         if entry is not None and len(msg.params) >= entry[0]:
             entry[1]()
+
+    def _on_unknown_command(self, msg: IrcLine) -> None:
+        if msg.params[1].upper() == "PRESENCE":
+            self._presence_unsupported = True  # this connection publishes no more
+            self._record_once("mesh-presence-unsupported", "421 PRESENCE")
 
     def _on_cap(self, msg: IrcLine) -> None:
         if msg.params[1].upper() == "ACK" and "message-tags" in msg.params[2].split():
@@ -925,6 +1211,11 @@ class MeshClient:
             budget = self._close_budget
         try:
             if quit_first:
+                with self._lock:
+                    self._presence = ("draining", _utc_now())
+                if not self._presence_unsupported:
+                    writer.write((self._presence_line() + "\r\n").encode("utf-8"))
+                    self._count("presence_sent")
                 writer.write(b"QUIT :Gwen is leaving\r\n")
                 await asyncio.wait_for(writer.drain(), timeout=max(0.01, budget / 2))
         except OSError:  # TimeoutError and ConnectionError are OSErrors
@@ -937,3 +1228,60 @@ class MeshClient:
         except Exception:  # noqa: BLE001  # a raising close is reported, not raised
             with self._lock:
                 self._close_error = True
+
+
+class PresenceGauge:
+    """Gwen's ``thinking`` / ``idle`` from the one boundary that shows it: a completion.
+
+    The daemon wraps every completion through its chat seam in :meth:`busy`; the
+    gauge counts the ones in flight (a typed turn, a spoken turn and the judge can
+    overlap) and tells the attached client only on an edge: the first in is
+    ``thinking``, the last out is ``idle``. No client attached is a no-op, so the
+    seam never depends on the mesh being up. Thread-safe.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._inflight = 0
+        self._client: Any = None
+        #: A client whose ``set_presence`` raised: counted, never raised into the seam.
+        self.failures = 0
+
+    def attach(self, client: Any) -> None:
+        """Report to *client* (``None`` detaches); it is told the current state now."""
+        with self._lock:
+            self._client = client
+            if client is not None:
+                self._tell(client, "thinking" if self._inflight else "idle")
+
+    @property
+    def inflight(self) -> int:
+        with self._lock:
+            return self._inflight
+
+    @contextlib.contextmanager
+    def busy(self) -> Iterator[None]:
+        self._step(+1)
+        try:
+            yield
+        finally:
+            self._step(-1)
+
+    def _step(self, by: int) -> None:
+        # The edge is published UNDER the lock: two threads crossing it (the last call
+        # ending, the judge starting) are told to the client in the order they happened,
+        # so the row can never read idle while a call is in flight (review of 0.25.0).
+        with self._lock:
+            before = self._inflight
+            self._inflight = max(0, before + by)
+            edge = (before == 0) != (self._inflight == 0)
+            if edge and self._client is not None:
+                self._tell(self._client, "thinking" if self._inflight else "idle")
+
+    def _tell(self, client: Any, state: str) -> None:
+        """Hand *client* the state; caller holds the lock. ``set_presence`` only takes the
+        client's own lock and never calls back here, so the nesting cannot deadlock."""
+        try:
+            client.set_presence(state)
+        except Exception:  # noqa: BLE001  # presence must never fail a completion
+            self.failures += 1

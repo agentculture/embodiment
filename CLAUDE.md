@@ -140,7 +140,10 @@ mesh` prints the setup and runs nothing). **Any agent on the mesh may talk to
 her and gets a normal turn, memory included** (operator q6/q9: "local agent is
 allowed to know local memory", "this mesh is local or only trusted servers"), so
 **a newly linked server is a new reader of her memory**, and agentirc does not
-authenticate a nick. Listing her as a resident awaits agentculture/culture#506.
+authenticate a nick. Since 0.25.0 she publishes culture's PRESENCE (`+A`, idle/thinking/
+draining), so culture can list her as a resident (seen once on spark, from a test daemon); with
+`CULTURE_AGENT_SECRET` injected by `grant run` (read once, removed from the environment) she logs in
+with SASL PLAIN, and a refused login stops only the mesh lane. Activation is the operator's.
 English is text-only: lobes `tts` is Hebrew-only. **Not measured, not claimed:**
 Hebrew quality of the non-Gemma roles, the English `remember`/`forget` call rate,
 voice latency per role and for the translator, mesh answer latency. Culture-rules
@@ -428,6 +431,7 @@ embodiment/
   voice_latency.py      background voice-latency probe; the gate on non-senses voices
   translate.py          the Gemma translator (persona translate_via); original text kept
   mesh_client.py        spark-gwen: Gwen's own agentirc connection (stdlib), degrade-never-raise
+                        + PRESENCE (MODE +A, PresenceGauge driven by the chat seam; #121)
   mesh_tools.py         ask_culture + the mesh write guard; mesh answers fenced as untrusted
   mesh_asks.py          open asks, late answers (d2); cli/_commands/mesh.py prints the setup
   mesh_judge.py         "was it for me?": a small senses call picks which ask a line answers (d7)
