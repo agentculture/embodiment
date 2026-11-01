@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.3] - 2026-11-01
+
+### Changed
+
+- The operator confirmed `e51`–`e53`. In the 0.24.0 delivery record, c33 (the live mesh ask) and c35 (the external resident) are now medium, n = 1 each. c8 stays low: `hand` has never answered live, and the no-tools final step is unproven. devague no longer reports c33's obligation `o26` as untested.
+
 ## [0.25.2] - 2026-11-01
 
 ### Changed
