@@ -135,7 +135,7 @@ _STATUS_SENTENCE_RE = re.compile(
     rf"|^(?:I{_APOS}ll|I will)\s+(?:continu\w*\s+to\s+|keep\w*\s+)?monitor\w*\b[^:]*$"
     rf"|^(?:I{_APOS}m|I am)\s+(?:still\s+)?continu\w*\s+to\s+monitor\b[^:]*"
     r"\bfor\s+(?:any|further|new|more)\b[^:]*$"
-    r"|^I see that\s+\S+\s+has\s+(?:re)?joined\b[^:]*$"
+    r"|^I see (?:that\s+)?\S+\s+has\s+(?:re)?joined\b[^:]*$"
     r"|^(?:עניתי|השבתי)\s+ל[^:]*$|^(?:אמשיך|ממשיך|ממשיכה)\s+לעקוב[^:]*$",
     re.IGNORECASE,
 )

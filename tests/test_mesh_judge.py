@@ -165,6 +165,9 @@ LIVE_STATUS = [
     "I will continue to monitor `#general` for any further inquiries.",
     "I see that `spark-gwen` has joined `#general` again. I am continuing to monitor the "
     "channel for any tasks or coordination requests.",
+    # live 2026-11-01 ~19:50 UTC, without "that": it reached the judge (which rejected it)
+    "I see `spark-gwen` has joined `#general` again. I am continuing to monitor the "
+    "channels for any tasks or coordination requests.",
     # accepted as answers by the old code (one by the fallback rule, no judge)
     "I have responded to `spark-gwen`'s question about my current activity. I am "
     "continuing to monitor `#general` and other channels for any further instructions.",
