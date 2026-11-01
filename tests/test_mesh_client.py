@@ -51,6 +51,12 @@ class FakeIrcd:
         self.answer_ping = True
         self.send_welcome = True
         self.who_members: dict[str, list[tuple[str, str]]] = {}  # chan -> [(nick, server)]
+        # SASL, as agentirc 9.14 answers it (docs/accounts.md): None = no account system
+        self.sasl_secret: Optional[str] = None  # the secret that logs in as the nick
+        self.offer_sasl = True
+        self.sasl_numeric = ""  # force a numeric instead of checking ("906", "908", ...)
+        self.ls_lines = 1  # CAP LS split over this many lines
+        self.payloads: list[str] = []
         self._writers: list[asyncio.StreamWriter] = []
         self._loop = asyncio.new_event_loop()
         self._server: Optional[asyncio.base_events.Server] = None
@@ -80,9 +86,25 @@ class FakeIrcd:
         self.connections += 1
         self._writers.append(writer)
         nick = ""
+        negotiating = False
+        held = False
+        chunks: list[str] = []
 
         def out(line: str) -> None:
             writer.write((line + "\r\n").encode())
+
+        def welcome() -> None:
+            out(f":{self.name} 001 {nick} :Welcome to {self.name} IRC Network")
+
+        def check_payload() -> bool:
+            import base64 as b64
+
+            self.payloads.append("".join(chunks))
+            try:
+                _, authcid, secret = b64.b64decode("".join(chunks)).decode().split("\0")
+            except ValueError:
+                return False
+            return authcid == nick and secret == self.sasl_secret
 
         try:
             while True:
@@ -93,16 +115,62 @@ class FakeIrcd:
                 self.lines.append(line)
                 parts = line.split(" ")
                 cmd = parts[0].upper()
-                if cmd == "CAP" and len(parts) > 1 and parts[1] == "REQ":
+                if cmd == "CAP" and len(parts) > 1 and parts[1] == "LS":
+                    negotiating = True
+                    caps = ["agentirc.io/bot", "message-tags"]
+                    if self.offer_sasl:
+                        caps.append("sasl=PLAIN")
+                    for i in range(self.ls_lines - 1):
+                        out(f":{self.name} CAP * LS * :{caps[i % len(caps)]}")
+                    out(f":{self.name} CAP * LS :{' '.join(caps)}")
+                elif cmd == "CAP" and len(parts) > 1 and parts[1] == "REQ":
+                    asked = line.split(":", 1)[1] if ":" in line else ""
                     verdict = "ACK" if self.ack_caps else "NAK"
-                    out(f":{self.name} CAP * {verdict} :message-tags")
+                    out(f":{self.name} CAP * {verdict} :{asked}")
+                elif cmd == "CAP" and len(parts) > 1 and parts[1] == "END":
+                    negotiating = False
+                    if held and nick:
+                        held = False
+                        welcome()
+                elif cmd == "AUTHENTICATE":
+                    arg = parts[1] if len(parts) > 1 else ""
+                    if arg == "PLAIN":
+                        if self.sasl_numeric:
+                            out(f":{self.name} {self.sasl_numeric} {nick} :refused")
+                            if self.sasl_numeric != "906":
+                                out("ERROR :Closing Link")
+                                await writer.drain()
+                                break
+                        else:
+                            out("AUTHENTICATE +")
+                    elif arg == "+" or len(arg) < 400:
+                        if arg != "+":
+                            chunks.append(arg)
+                        if check_payload():
+                            out(f":{self.name} 900 {nick} {nick}!gwen@127.0.0.1 {nick} :logged in")
+                            out(f":{self.name} 903 {nick} :SASL authentication successful")
+                        else:
+                            out(f":{self.name} 904 {nick} :SASL authentication failed")
+                            out("ERROR :Closing Link")
+                            await writer.drain()
+                            break
+                    else:
+                        chunks.append(arg)
                 elif cmd == "NICK":
                     nick = parts[1]
                     if self.nick_reply:
                         out(f":{self.name} {self.nick_reply} * {nick} :refused")
                         nick = ""
                 elif cmd == "USER" and nick and self.send_welcome:
-                    out(f":{self.name} 001 {nick} :Welcome to {self.name} IRC Network")
+                    if negotiating:
+                        held = True  # agentirc 9.14: no 001 until CAP END after CAP LS
+                    elif self.sasl_secret is not None and not chunks:
+                        out(f":{self.name} 904 {nick} :nick reserved")  # an account nick
+                        out("ERROR :Closing Link")
+                        await writer.drain()
+                        break
+                    else:
+                        welcome()
                 elif cmd == "JOIN":
                     out(f":{nick}!gwen@127.0.0.1 JOIN {parts[1]}")
                 elif cmd == "WHO":
@@ -658,6 +726,7 @@ def test_stdlib_only_and_no_subprocess():
     allowed = {
         "__future__",
         "asyncio",
+        "base64",  # the SASL PLAIN payload (#121 part 2)
         "collections",
         "contextlib",  # PresenceGauge.busy (#121)
         "dataclasses",
@@ -968,3 +1037,140 @@ def test_gauge_edges_from_many_threads_end_on_the_true_state():
     assert rec.states[-1] == "idle"
     # strictly alternating: every edge was told in the order it happened
     assert all(a != b for a, b in zip(rec.states[1:], rec.states[2:]))
+
+
+# ── SASL PLAIN (embodiment#121 part 2; agentirc 9.14 docs/accounts.md) ─────────
+
+SECRET = "s3cret-for-tests-0123456789abcdef"
+
+
+def test_without_a_secret_the_wire_is_unchanged(ircd, started):
+    client = started(make_config(ircd))
+    wait_for(lambda: client.state == "registered")
+    assert ircd.lines[:4] == [
+        "CAP REQ :message-tags",
+        "NICK spark-gwen",
+        "USER gwen 0 * :Gwen",
+        "CAP END",
+    ]
+    assert not ircd.sent("AUTHENTICATE")
+    assert client.sasl_state == "off"
+
+
+def test_a_secret_logs_in_before_registration(ircd, started):
+    ircd.sasl_secret = SECRET
+    client = started(make_config(ircd, sasl_secret=SECRET))
+    wait_for(lambda: client.state == "registered")
+    assert client.sasl_state == "authenticated"
+    assert client.status()["sasl"] == "authenticated"
+    assert ircd.lines[:3] == ["CAP LS 302", "NICK spark-gwen", "USER gwen 0 * :Gwen"]
+    order = [line.split(" :")[0] for line in ircd.lines]
+    assert order.index("AUTHENTICATE PLAIN") < order.index("CAP END")
+    assert "CAP REQ :sasl message-tags" in ircd.lines
+    assert client.status()["message_tags"] is True
+    wait_for(lambda: ircd.sent("JOIN "))
+
+
+def test_the_payload_is_nul_nick_nul_secret(ircd, started):
+    import base64
+
+    ircd.sasl_secret = SECRET
+    client = started(make_config(ircd, sasl_secret=SECRET))
+    wait_for(lambda: client.state == "registered")
+    assert base64.b64decode(ircd.payloads[0]) == b"\0spark-gwen\0" + SECRET.encode()
+
+
+def test_a_wrong_secret_is_permanent_and_never_retried(ircd, started):
+    ircd.sasl_secret = "the-real-one"
+    client = started(make_config(ircd, sasl_secret="a-stale-one"))
+    wait_for(lambda: client.state == "sasl-refused")
+    assert client.sasl_state == "refused"
+    assert any(d.code == "mesh-sasl-refused" for d in client.degradations)
+    time.sleep(0.4)  # backoff_max is 0.2: a retry would have connected again
+    assert ircd.connections == 1
+
+
+@pytest.mark.parametrize("numeric", ["902", "905", "908"])
+def test_each_permanent_numeric_stops_the_lane(ircd, started, numeric):
+    ircd.sasl_secret = SECRET
+    ircd.sasl_numeric = numeric
+    client = started(make_config(ircd, sasl_secret=SECRET))
+    wait_for(lambda: client.state == "sasl-refused")
+    assert ircd.connections == 1
+
+
+def test_an_abort_is_retried(ircd, started):
+    ircd.sasl_secret = SECRET
+    ircd.sasl_numeric = "906"
+    client = started(make_config(ircd, sasl_secret=SECRET))
+    wait_for(lambda: ircd.connections >= 2)
+    assert any(d.code == "mesh-sasl-aborted" for d in client.degradations)
+    ircd.sasl_numeric = ""
+    wait_for(lambda: client.state == "registered")
+    assert client.sasl_state == "authenticated"
+
+
+def test_a_server_without_sasl_is_joined_as_before_and_recorded(ircd, started):
+    ircd.offer_sasl = False
+    client = started(make_config(ircd, sasl_secret=SECRET))
+    wait_for(lambda: client.state == "registered")
+    assert client.sasl_state == "unavailable"
+    assert any(d.code == "mesh-sasl-unavailable" for d in client.degradations)
+    assert not ircd.sent("AUTHENTICATE")
+
+
+def test_a_multi_line_cap_ls_is_read_whole(ircd, started):
+    ircd.sasl_secret = SECRET
+    ircd.ls_lines = 3
+    client = started(make_config(ircd, sasl_secret=SECRET))
+    wait_for(lambda: client.state == "registered")
+    assert len(ircd.sent("CAP REQ")) == 1
+    assert client.sasl_state == "authenticated"
+
+
+def test_a_reserved_nick_without_a_secret_stops_instead_of_looping(ircd, started):
+    ircd.sasl_secret = SECRET  # the nick has an account; this daemon has no secret
+    client = started(make_config(ircd))
+    wait_for(lambda: client.state == "sasl-refused")
+    # The server closes with our CAP END unread, so the kernel may RESET the socket and
+    # drop the 904 before it is read (that attempt reads as a failed connect and is
+    # retried). The guarantee: once a 904 is read, no further attempt.
+    seen = ircd.connections
+    time.sleep(0.4)
+    assert ircd.connections == seen
+
+
+def test_the_secret_is_never_shown():
+    config = MeshConfig(sasl_secret=SECRET)
+    assert SECRET not in repr(config)
+    client = MeshClient(config)
+    assert SECRET not in repr(client)
+    assert SECRET not in str(client.status())
+    assert config == MeshConfig()  # never compared either
+
+
+def test_take_agent_secret_removes_it_from_the_environment():
+    env = {mc.ENV_AGENT_SECRET: f"  {SECRET}\n", "OTHER": "x"}
+    assert mc.take_agent_secret(env) == SECRET
+    assert env == {"OTHER": "x"}
+    assert mc.take_agent_secret(env) == ""
+
+
+def test_from_env_never_reads_the_secret():
+    config = MeshConfig.from_env({mc.ENV_AGENT_SECRET: SECRET})
+    assert config.sasl_secret == ""
+
+
+@pytest.mark.parametrize("length", [1, 290, 300, 301, 600])
+def test_payload_chunking_follows_the_400_rule(length):
+    import base64
+
+    lines = mc.sasl_plain_lines("spark-gwen", "s" * length)
+    pieces = [line.split(" ", 1)[1] for line in lines]
+    assert all(len(p) <= 400 for p in pieces)
+    data = "".join(p for p in pieces if p != "+")
+    assert base64.b64decode(data) == b"\0spark-gwen\0" + b"s" * length
+    if len(data) % 400 == 0:
+        assert pieces[-1] == "+"
+    else:
+        assert len(pieces[-1]) < 400

@@ -34,8 +34,9 @@ def test_mesh_text_prints_nick_channels_env_and_steps(capsys: pytest.CaptureFixt
     assert "#general" in out
     for name in _ENV:
         assert name in out
-    assert "not yet supported" in out
-    assert "culture-spark-gwen.sock" in out
+    assert "embodiment-gwen.service" in out
+    assert "CULTURE_AGENT_SECRET" in out
+    assert "--owner-ready" in out
     assert "spark-embodiment" in out
 
 
@@ -47,7 +48,8 @@ def test_mesh_json_shape_and_defaults(capsys: pytest.CaptureFixture[str]) -> Non
     assert payload["channels"] == ["#general"]
     assert payload["enabled"] is True
     assert payload["env"] == list(_ENV)
-    assert payload["registered_resident"] is False
+    assert payload["account_env"] == "CULTURE_AGENT_SECRET"
+    assert payload["owner_unit"] == "embodiment-gwen.service"
     assert payload["registration_steps"]
 
 

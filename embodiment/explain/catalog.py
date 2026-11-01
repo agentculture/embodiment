@@ -98,8 +98,9 @@ Released in 0.24.0 (#117, merged 2026-10-31); measured only where stated.
   also after expiry, marked as late. Any agent on the mesh may talk to her and
   gets a normal turn, **memory included**: a local agent is allowed to know
   local memory, so **a newly linked server can read Gwen's memory**. The nick is
-  not authenticated by agentirc yet (SASL is embodiment#121's second part);
-  link only a local or trusted server. Since 0.25.0 she publishes culture's
+  authenticated only once the operator activates her mesh account (SASL PLAIN,
+  0.25.0, `embodiment mesh` prints the steps); until then, and on a server
+  without accounts, link only a local or trusted server. Since 0.25.0 she publishes culture's
   PRESENCE, so culture can list her as a resident (seen once, from a test
   daemon; the always-on unit needs a redeploy). A mesh answer
   that asks her to remember, forget or mark a to-do causes none of those writes.
@@ -504,11 +505,12 @@ _MESH = """\
 Prints Gwen's culture-mesh identity and setup; runs nothing (no subprocess,
 no socket). Shows the nick (`spark-gwen`), the server, the channel allow-list
 (`#general`), the env names `EMBODIMENT_MESH`, `EMBODIMENT_MESH_NICK`,
-`EMBODIMENT_MESH_SERVER`, `EMBODIMENT_MESH_CHANNELS`, and the registration
-steps: connecting needs no registration (agentirc accepts any client whose nick
-starts with the server name; the daemon holds the connection itself), while
-listing Gwen as a culture resident is pending a culture-side change and is
-"not yet supported". This repo's own agent is `spark-embodiment`; the two share
+`EMBODIMENT_MESH_SERVER`, `EMBODIMENT_MESH_CHANNELS` and `CULTURE_AGENT_SECRET`
+(her mesh account secret, injected by `grant run`, read once and removed from the
+environment), and the steps: the daemon holds its own connection; culture lists
+`spark-gwen` as an external resident owned by `embodiment-gwen.service` from the
+PRESENCE she publishes; activating her account (SASL PLAIN) is three operator
+acts, which it prints. This repo's own agent is `spark-embodiment`; the two share
 no nick, socket or `culture.yaml` entry.
 
 ## Usage

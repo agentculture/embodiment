@@ -55,6 +55,20 @@ The wire, as agentirc answers it (read from ``agentirc/client.py`` and
   (``mesh-presence-unsupported`` / ``mesh-mode-refused``); after a ``421`` that
   connection publishes no more PRESENCE, and the client goes on.
 
+* **Account (SASL PLAIN; agentirc 9.14 ``docs/accounts.md``; embodiment#121 part 2).**
+  With a secret configured (:data:`ENV_AGENT_SECRET`, taken out of the
+  environment once by :func:`take_agent_secret`), the client opens with
+  ``CAP LS 302``, sends NICK and USER, asks ``CAP REQ :sasl message-tags``,
+  answers ``AUTHENTICATE +`` with ``base64("\\0<nick>\\0<secret>")`` in
+  400-byte chunks, and sends ``CAP END`` on ``903``; the server holds ``001``
+  until then. ``904``/``905``/``908``/``902`` are permanent: ``mesh-sasl-refused``,
+  and the client stays off until the daemon restarts (culture's own agents exit
+  78; Gwen's daemon keeps her voice and page, so only the mesh lane stops). ``906``
+  (aborted) is retried with the usual backoff. A server that does not advertise
+  ``sasl`` records ``mesh-sasl-unavailable`` once and is joined as before (no flag
+  day). Without a secret the wire is byte-identical to the unauthenticated one.
+  The secret is never in a record, a status, a ``repr`` or a log.
+
 Clocks, each derived from what it bounds:
 
 * ``connect_deadline`` bounds the TCP connect, ``register_deadline`` the wait
@@ -82,6 +96,7 @@ text, a nick a remote party chose, or a secret.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import datetime
 import json
@@ -90,7 +105,7 @@ import re
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Iterator, Mapping, Optional
 
 from embodiment.safe_reason import describe_exception
@@ -99,6 +114,7 @@ __all__ = [
     "DEFAULT_CHANNELS",
     "DEFAULT_NICK",
     "DEFAULT_SERVER",
+    "ENV_AGENT_SECRET",
     "ENV_CHANNELS",
     "ENV_MESH",
     "ENV_NICK",
@@ -115,12 +131,16 @@ __all__ = [
     "MeshMessage",
     "PresenceGauge",
     "parse_line",
+    "take_agent_secret",
 ]
 
 ENV_MESH = "EMBODIMENT_MESH"
 ENV_NICK = "EMBODIMENT_MESH_NICK"
 ENV_SERVER = "EMBODIMENT_MESH_SERVER"
 ENV_CHANNELS = "EMBODIMENT_MESH_CHANNELS"
+#: Gwen's mesh account secret, injected by ``grant run --inject`` in her unit
+#: (culture#506). Read ONCE and removed from the environment: :func:`take_agent_secret`.
+ENV_AGENT_SECRET = "CULTURE_AGENT_SECRET"  # nosec B105 - an env var NAME, not a secret
 
 DEFAULT_NICK = "spark-gwen"
 DEFAULT_SERVER = "localhost:6667"
@@ -149,7 +169,32 @@ _QUIET_ENDINGS = (
     ValueError,
 )
 
-_TERMINAL = frozenset({"nick-taken", "nick-refused", "stopped"})
+_TERMINAL = frozenset({"nick-taken", "nick-refused", "sasl-refused", "stopped"})
+#: Numerics that end a SASL attempt for good (agentirc closes the connection after them).
+_SASL_PERMANENT = frozenset({"902", "904", "905", "908"})
+#: IRCv3 SASL's chunk size: a chunk of exactly this length means more follows.
+SASL_CHUNK = 400
+
+
+def take_agent_secret(env: Optional[Any] = None) -> str:
+    """Remove :data:`ENV_AGENT_SECRET` from *env* (``os.environ``) and return it, stripped.
+
+    Called once at the top of the daemon's ``main()``, before any child process is
+    started, so no child ever inherits it (culture#506, embodiment#121)."""
+    target = os.environ if env is None else env
+    value = target.pop(ENV_AGENT_SECRET, "") or ""
+    return value.strip()
+
+
+def sasl_plain_lines(nick: str, secret: str) -> list[str]:
+    """The ``AUTHENTICATE`` lines carrying PLAIN's ``\\0<nick>\\0<secret>``, 400-chunked."""
+    payload = base64.b64encode(b"\0" + nick.encode() + b"\0" + secret.encode()).decode("ascii")
+    chunks = [payload[i : i + SASL_CHUNK] for i in range(0, len(payload), SASL_CHUNK)]
+    lines = [f"AUTHENTICATE {chunk}" for chunk in chunks]
+    if len(payload) % SASL_CHUNK == 0:
+        lines.append("AUTHENTICATE +")  # a payload that is a multiple of 400 ends with "+"
+    return lines
+
 
 #: The six states of culture's PRESENCE contract (``protocol/extensions/presence.md``).
 PRESENCE_STATES = ("idle", "listening", "thinking", "working", "draining", "offline")
@@ -267,6 +312,9 @@ class MeshConfig:
     #: A configuration problem found by :meth:`from_env`; the client records it
     #: and stays off rather than raising.
     error: str = ""
+    #: The mesh account secret (SASL PLAIN). Never read by :meth:`from_env` (pass it
+    #: from :func:`take_agent_secret`), never in ``repr``, never compared.
+    sasl_secret: str = field(default="", repr=False, compare=False)
 
     @property
     def reconnect_bound(self) -> float:
@@ -452,6 +500,10 @@ class MeshClient:
         }
         self._presence = ("idle", _utc_now())
         self._presence_wake: Optional[asyncio.Event] = None
+        #: "off" (no secret), "pending", "authenticated", "unavailable" or "refused".
+        self._sasl = "pending" if config.sasl_secret else "off"
+        self._sasl_phase = ""
+        self._sasl_caps: list[str] = []
         #: Set by a ``421 PRESENCE``; reset on each new connection.
         self._presence_unsupported = False
         self._joined: set[str] = set()
@@ -508,6 +560,7 @@ class MeshClient:
                 "servers": list(servers),
                 "message_tags": self._message_tags,
                 "presence": {"state": self._presence[0], "since": self._presence[1]},
+                "sasl": self._sasl,
                 "counts": dict(self._counts),
                 "reconnect_bound": self._config.reconnect_bound,
                 "liveness_bound": self._config.liveness_bound,
@@ -627,6 +680,12 @@ class MeshClient:
             except RuntimeError:  # loop closed: the next session publishes it
                 pass
         return True
+
+    @property
+    def sasl_state(self) -> str:
+        """``off`` (no secret), ``pending``, ``authenticated``, ``unavailable``, ``refused``."""
+        with self._lock:
+            return self._sasl
 
     def presence(self) -> dict[str, Any]:
         """What was last set to publish: ``state``, ``since``, and lines ``sent``."""
@@ -761,17 +820,30 @@ class MeshClient:
         self._writer = writer
         registered = False
         try:
-            writer.write(b"CAP REQ :message-tags\r\n")
-            writer.write(f"NICK {cfg.nick}\r\n".encode())
-            writer.write(b"USER gwen 0 * :Gwen\r\n")
-            writer.write(b"CAP END\r\n")
+            if cfg.sasl_secret:
+                # IRCv3 negotiation: the server holds 001 until CAP END (agentirc 9.14).
+                self._sasl_phase, self._sasl_caps = "ls", []
+                with self._lock:
+                    if self._sasl != "refused":
+                        self._sasl = "pending"
+                writer.write(b"CAP LS 302\r\n")
+                writer.write(f"NICK {cfg.nick}\r\n".encode())
+                writer.write(b"USER gwen 0 * :Gwen\r\n")
+            else:
+                writer.write(b"CAP REQ :message-tags\r\n")
+                writer.write(f"NICK {cfg.nick}\r\n".encode())
+                writer.write(b"USER gwen 0 * :Gwen\r\n")
+                writer.write(b"CAP END\r\n")
             await writer.drain()
             await self._register(reader, writer)
             registered = True
             await self._run_registered(reader, writer)
             return "stopped"
         except _Dropped as drop:
-            if drop.code in ("nick-taken", "nick-refused", "stopped"):
+            if drop.code in _TERMINAL:
+                if drop.code == "sasl-refused":
+                    with self._lock:
+                        self._sasl = "refused"
                 if drop.code != "stopped":
                     self._set_state(drop.code)
                     self._record(f"mesh-{drop.code}", drop.reason)
@@ -830,7 +902,72 @@ class MeshClient:
                 raise _Dropped("nick-taken", "433 ERR_NICKNAMEINUSE")
             if msg.command == "432":
                 raise _Dropped("nick-refused", "432 ERR_ERRONEUSNICKNAME")
+            if self._sasl_phase and self._sasl_step(msg, writer):
+                continue
+            if msg.command in _SASL_PERMANENT and not self._config.sasl_secret:
+                # The nick now has an account and this daemon holds no secret: retrying
+                # would only feed the server's failure limiter.
+                raise _Dropped("sasl-refused", f"{msg.command}: the nick needs an account")
             self._handle_common(msg, writer)
+
+    # ── SASL PLAIN (embodiment#121 part 2) ─────────────────────────────────
+    def _sasl_step(self, msg: IrcLine, writer: asyncio.StreamWriter) -> bool:
+        """One negotiation line; ``True`` when it was SASL's. Raises ``_Dropped`` on a
+        refusal: permanent numerics end the lane, ``906`` (aborted) is retried."""
+        command = msg.command
+        if command in _SASL_PERMANENT:
+            self._sasl_phase = ""
+            raise _Dropped("sasl-refused", f"{command} from the server")
+        if command == "906":
+            self._sasl_phase = ""
+            raise _Dropped("sasl-aborted", "906 ERR_SASLABORTED")
+        if command == "CAP" and len(msg.params) >= 3:
+            return self._sasl_cap(msg, writer)
+        if command == "AUTHENTICATE" and self._sasl_phase == "auth":
+            if msg.params and msg.params[0] == "+":
+                for line in sasl_plain_lines(self._config.nick, self._config.sasl_secret):
+                    writer.write((line + "\r\n").encode("ascii"))
+            return True
+        if command == "903":
+            self._sasl_phase = ""
+            with self._lock:
+                self._sasl = "authenticated"
+            writer.write(b"CAP END\r\n")
+            return True
+        return command == "900"  # "you are now logged in as": nothing to do
+
+    def _sasl_cap(self, msg: IrcLine, writer: asyncio.StreamWriter) -> bool:
+        sub_command = msg.params[1].upper()
+        if sub_command == "LS" and self._sasl_phase == "ls":
+            self._sasl_caps.extend(msg.params[-1].split())
+            if len(msg.params) >= 4 and msg.params[2] == "*":
+                return True  # a multi-line LS: more follows
+            offered = any(c == "sasl" or c.startswith("sasl=") for c in self._sasl_caps)
+            if offered:
+                self._sasl_phase = "req"
+                writer.write(b"CAP REQ :sasl message-tags\r\n")
+            else:
+                self._sasl_without()
+                writer.write(b"CAP REQ :message-tags\r\nCAP END\r\n")
+            return True
+        if sub_command == "ACK" and self._sasl_phase == "req":
+            self._on_cap(msg)
+            if "sasl" in msg.params[2].split():
+                self._sasl_phase = "auth"
+                writer.write(b"AUTHENTICATE PLAIN\r\n")
+            return True
+        if sub_command == "NAK" and self._sasl_phase == "req":
+            self._sasl_without()
+            writer.write(b"CAP REQ :message-tags\r\nCAP END\r\n")
+            return True
+        return False
+
+    def _sasl_without(self) -> None:
+        """The server offers no SASL: join unauthenticated, as before (no flag day)."""
+        self._sasl_phase = ""
+        with self._lock:
+            self._sasl = "unavailable"
+        self._record("mesh-sasl-unavailable", "the server does not offer sasl", streak=True)
 
     def _on_welcome(self, msg: IrcLine) -> None:
         """001: registered. Counted (a second one is a reconnect); the streak resets."""

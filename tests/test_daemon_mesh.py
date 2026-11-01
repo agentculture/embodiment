@@ -20,6 +20,7 @@ anything could start it, and never call ``start()``.
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -194,6 +195,17 @@ class TestPresence:
         with gauge.busy():  # detached on stop: the closed client is told nothing
             pass
         assert gauge.failures == 0
+
+    def test_status_reports_the_sasl_state_never_the_secret(
+        self, harness: Any, ircd: FakeIrcd, tmp_path: Path
+    ) -> None:
+        secret = "agent-secret-for-the-test-0123456789"
+        ircd.sasl_secret = secret
+        h = _wired(harness, _lane(tmp_path, make_config(ircd, sasl_secret=secret)))
+        h.app.start()
+        _registered(h)
+        wait_for(lambda: h.app.status()["mesh"]["sasl"] == "authenticated")
+        assert secret not in json.dumps(h.app.status(), default=str)
 
     def test_a_lane_without_a_gauge_still_publishes_idle(
         self, harness: Any, ircd: FakeIrcd, tmp_path: Path
@@ -866,6 +878,21 @@ class TestMain:
             assert isinstance(lane.presence, app_module.PresenceGauge)
             assert built == []  # the client is built by start(), never by main()
             assert Path(lane.book._path).parent == Path(application._state.dir)
+        finally:
+            application.close(deadline=2.0)
+
+    def test_main_takes_the_agent_secret_out_of_the_environment(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        secret = "agent-secret-for-the-test-0123456789"
+        monkeypatch.setenv("CULTURE_AGENT_SECRET", secret)
+        application, _ = self._main(tmp_path, monkeypatch)
+        try:
+            assert "CULTURE_AGENT_SECRET" not in os.environ  # no child can inherit it
+            lane = application._mesh
+            assert lane is not None and lane.config.sasl_secret == secret
+            assert secret not in repr(lane.config)
+            assert secret not in json.dumps(application.status(), default=str)
         finally:
             application.close(deadline=2.0)
 

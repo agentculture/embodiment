@@ -215,7 +215,13 @@ from embodiment.mesh_asks import (
     THREAD_PREFIX,
     AskBook,
 )
-from embodiment.mesh_client import MeshClient, MeshConfig, MeshMessage, PresenceGauge
+from embodiment.mesh_client import (
+    MeshClient,
+    MeshConfig,
+    MeshMessage,
+    PresenceGauge,
+    take_agent_secret,
+)
 from embodiment.perception import perceive
 from embodiment.persona_prompt import compose_base, english_tool_prompts, tool_prompt_language
 from embodiment.personas import (
@@ -1435,7 +1441,7 @@ _MESH_NOTICES = {
     },
 }
 #: Client states that mean the mesh is down (``registered`` is up; the rest are passing).
-_MESH_DOWN_STATES = frozenset({"backoff", "nick-refused", "off"})
+_MESH_DOWN_STATES = frozenset({"backoff", "nick-refused", "sasl-refused", "off"})
 
 
 def nick_retry_wait(config: MeshConfig) -> float:
@@ -7099,6 +7105,7 @@ class DaemonApp:
         state = "off"
         servers: tuple[str, ...] = ()
         presence: Optional[dict[str, Any]] = None
+        sasl: Optional[str] = None
         if client is not None:
             state = str(getattr(client, "state", "") or "unknown")
             try:
@@ -7106,6 +7113,7 @@ class DaemonApp:
             except Exception:  # noqa: BLE001  # a probe that fails reads as none visible
                 servers = ()
             presence = _mesh_presence(client)
+            sasl = getattr(client, "sasl_state", None)
         try:
             asks = lane.book.all()
         except Exception:  # noqa: BLE001  # the book never raises; belt and braces
@@ -7128,6 +7136,8 @@ class DaemonApp:
             "notices": self._mesh_notices.status(),
             "conversations": len(self.mesh_conversations()),
             "presence": presence,
+            # off | pending | authenticated | unavailable | refused; never the secret
+            "sasl": sasl if isinstance(sasl, str) else None,
         }
 
     def _library_list(self) -> dict[str, Any]:
@@ -10355,6 +10365,9 @@ def main() -> DaemonApp:
     # module in this package depends on the AudioEndpoint protocol only.
     from embodiment.audio.host import HostEndpoint
 
+    # Gwen's mesh account secret (culture#506, embodiment#121): read ONCE and removed
+    # from the environment before anything here can start a child process.
+    agent_secret = take_agent_secret(os.environ)
     state = DaemonState(resolve_state_dir())
     realtime = RealtimeConfig.from_env()
     secret = guard_module.load_or_create_install_secret(state.dir)
@@ -10365,7 +10378,7 @@ def main() -> DaemonApp:
     # every redaction list beside the gateway key and the install secret.
     library_config = LibraryConfig.from_env(os.environ)
     library_key = library_config.key if library_config is not None else ""
-    secrets = tuple(s for s in (realtime.api_key, secret.secret, library_key) if s)
+    secrets = tuple(s for s in (realtime.api_key, secret.secret, library_key, agent_secret) if s)
     bus = Bus(redact=secrets)
 
     # Records that arrive before the app exists (an incomplete Access env is
@@ -10419,7 +10432,7 @@ def main() -> DaemonApp:
     tools = ToolRegistry()
     # The mesh residency (t15): on by default, EMBODIMENT_MESH=off for none. The client
     # is BUILT by start(), never here: building the daemon dials nothing.
-    mesh_config = MeshConfig.from_env(os.environ)
+    mesh_config = MeshConfig.from_env(os.environ, sasl_secret=agent_secret)
     mesh = MeshLane(
         config=mesh_config,
         book=AskBook(base_dir / ASKS_NAME),
