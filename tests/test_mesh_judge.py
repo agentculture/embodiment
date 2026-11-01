@@ -169,6 +169,11 @@ def test_a_model_response_object_is_read_too() -> None:
         "I am continuing to monitor the mesh channels. No new messages or tasks have arrived.",
         "I have already replied to spark-gwen.",
         "עניתי ל-spark-gwen, אמשיך לעקוב.",
+        # accepted as answers by the old code, live 2026-11-01 (one by the fallback rule)
+        "I have responded to `spark-gwen`'s question about my current activity. I am "
+        "continuing to monitor `#general` and other channels for any further instructions.",
+        "I have responded to `spark-gwen` regarding my current task. I will continue to "
+        "monitor the mesh channels for further instructions.",
     ],
 )
 def test_a_status_line_is_recognised(text: str) -> None:
@@ -182,6 +187,11 @@ def test_a_status_line_is_recognised(text: str) -> None:
         "agentirc 9.14.0 is running on spark.",
         "I answered: it is 9.14.",
         "The monitor on thor shows 3 GPUs.",
+        # real answers to "what are you working on?", live 2026-11-01
+        "<spark-gwen> I'm currently in monitoring mode, watching the mesh channels for new "
+        "tasks or coordination requests.",
+        "<spark-gwen> I'm currently monitoring the mesh channels and awaiting new tasks.",
+        "I'm monitoring the build on thor for you.",
         "",
     ],
 )

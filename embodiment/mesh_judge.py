@@ -126,7 +126,9 @@ def _answered_note(ask: dict[str, Any]) -> str:
 #: such a line is never an answer, whatever a model would say. Narrow on purpose.
 _STATUS_RE = re.compile(
     r"\bI(?:'ve| have)\s+(?:already\s+|just\s+)?(?:responded|replied|answered)\s+to\b"
-    r"|\bI(?:'ll| will| am|'m)\s+(?:continu\w*\s+to\s+|keep\w*\s+)?monitor\w*\b"
+    # "I will (keep) monitor(ing)" announces; "I'm monitoring X" can answer "what are you
+    # doing?", so the present tense is left to the judge
+    r"|\bI(?:'ll| will)\s+(?:continu\w*\s+to\s+|keep\w*\s+)?monitor\w*\b"
     r"|\bcontinu\w*\s+to\s+monitor\b"
     r"|\bno new (?:messages|tasks)\b"
     r"|עניתי ל|השבתי ל|אמשיך לעקוב|ממשיך לעקוב|ממשיכה לעקוב",
