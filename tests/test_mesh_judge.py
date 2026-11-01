@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
+
 from embodiment import mesh_judge as mj
 
 ASKS = [
@@ -154,3 +156,50 @@ def test_a_model_response_object_is_read_too() -> None:
     )
     assert verdict.ok
     assert verdict.ask_id == "a1"
+
+
+# ── status lines (live run, 2026-11-01) ─────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "I've responded to `spark-gwen`'s question regarding the server version. "
+        "I will continue to monitor `#general` for any further inquiries.",
+        "I am continuing to monitor the mesh channels. No new messages or tasks have arrived.",
+        "I have already replied to spark-gwen.",
+        "עניתי ל-spark-gwen, אמשיך לעקוב.",
+    ],
+)
+def test_a_status_line_is_recognised(text: str) -> None:
+    assert mj.is_status_line(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "<spark-gwen> The spark server is running `associate` version 0.10.0.",
+        "agentirc 9.14.0 is running on spark.",
+        "I answered: it is 9.14.",
+        "The monitor on thor shows 3 GPUs.",
+        "",
+    ],
+)
+def test_an_answer_is_not_a_status_line(text: str) -> None:
+    assert not mj.is_status_line(text)
+
+
+def test_the_prompt_says_a_report_is_not_an_answer() -> None:
+    messages, _ = mj.build_messages("spark-gwen", [], [], "spark-ada", "x")
+    assert "only reports on itself does NOT answer" in messages[0]["content"]
+
+
+def test_an_answered_ask_shows_its_earlier_answer() -> None:
+    ask = {
+        "ask_id": "a1",
+        "text": "which version?",
+        "status": "answered",
+        "answers": [{"sender": "spark-ada", "text": "9.14"}],
+    }
+    messages, _ = mj.build_messages("spark-gwen", [ask], [], "spark-ada", "x")
+    assert 'Q1 (already answered by spark-ada: "9.14"): which version?' in messages[1]["content"]

@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.1] - 2026-11-01
+
+### Fixed
+
+- The "was it for me?" judge no longer takes a status line for an answer. Live on 2026-11-01, spark-associate's "I've responded to `spark-gwen`'s question … I will continue to monitor `#general`" was attached to Gwen's ask as a second answer. Two layers:
+  - A line that reports on its sender is never an answer. That covers having answered or replied, continuing to monitor, and "no new messages", in English or Hebrew. It is caught by a fixed pattern before the judge or the rules see it, so it costs no model call, and is counted in `status.mesh.status_lines_skipped`. If it is addressed to Gwen, it still starts a normal agent turn.
+  - The judge's prompt says a report is not an answer and that an answered question is answered again only by new information. Each answered question now shows its earlier answer: who sent it and what it said.
+
 ## [0.25.0] - 2026-11-01
 
 ### Added
