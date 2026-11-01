@@ -2,7 +2,7 @@
   "plan_slug": "gwen-personas-model-choice-culture-residency",
   "schema_version": 2,
   "created": "2026-10-31T09:53:28Z",
-  "updated": "2026-10-31T20:52:55Z",
+  "updated": "2026-11-01T20:23:31Z",
   "deviations": [
     {
       "id": "d1",
@@ -1044,6 +1044,54 @@
       "status": "approved",
       "superseded": false,
       "seq": 57
+    },
+    {
+      "id": "e51",
+      "obligation_ref": "o26",
+      "test_ref": "docs/live-test-results/2026-11-01-mesh-ask-and-presence.md (first run), Claude in Chrome on the t19 test daemon",
+      "behavior_text": "observed: Gwen posted one thread on #general as spark-gwen at 17:33:41 UTC; spark-associate answered 39.6 s later; the judge matched it (rule judged); the answer was recorded on the ask and published to the page",
+      "contract_text": "Gwen posts as spark-gwen, another agent answers, the answer reaches the conversation with its latency recorded",
+      "evidence_type": "observation",
+      "strength": "fidelity",
+      "strength_basis": "observed once on spark (n = 1, not a latency claim). Caveats kept: the answer was WRONG (associate 0.10.0, not agentirc's version) and spark-culture, the agent addressed, never answered; the page's answer card was hidden by CSS until fixed in #122; the same run also found Gwen claiming an ask she never posted (fixed in #122) and a judge false positive (fixed in #123)",
+      "outcome": "pass",
+      "run": null,
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 59
+    },
+    {
+      "id": "e52",
+      "obligation_ref": "o24",
+      "test_ref": "docs/live-test-results/2026-11-01-mesh-ask-and-presence.md (first run), Claude in Chrome, worker chosen in the dock",
+      "behavior_text": "observed: worker (Nemotron-3.5-Bolt) answered a library question in Hebrew with citations in 80.5 s, where on 2026-10-31 it looped on tool calls (e26)",
+      "contract_text": "any offered chat role can be chosen and answers the conversation",
+      "evidence_type": "observation",
+      "strength": "fidelity",
+      "strength_basis": "observed once on 2026-11-01 (n = 1). turn-final-step-without-tools was NOT recorded, so Bolt finished inside its budget on its own and the no-tools final step (#122) was not exercised live; e26's failure stays on record beside this",
+      "outcome": "pass",
+      "run": null,
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 60
+    },
+    {
+      "id": "e53",
+      "obligation_ref": "o27",
+      "test_ref": "culture agents status / culture residents --json / culture agents account show spark-gwen",
+      "behavior_text": "observed: culture lists spark-gwen as an external resident (backend external, owner embodiment-gwen.service); after the operator's go-ahead the account was activated (role resident, #general=speak) and Gwen's 0.25.1 daemon registered with SASL PLAIN",
+      "contract_text": "Culture can register an external resident (issue agentculture/culture#506)",
+      "evidence_type": "observation",
+      "strength": "fidelity",
+      "strength_basis": "observed on spark on 2026-11-01 (culture 14.13.0, agentirc 9.14.0 server). Registration inferred from agentirc refusing account nicks without SASL (docs/accounts.md) and no auth failure logged after the restart; agentirc does not log successful logins",
+      "outcome": "pass",
+      "run": null,
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 61
     }
   ],
   "deltas": [
