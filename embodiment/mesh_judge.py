@@ -108,37 +108,50 @@ def _where(thread: Optional[str]) -> str:
 
 
 def _answered_note(ask: dict[str, Any]) -> str:
-    """`` (already answered by <nick>: "<text>")`` for an answered ask, else ``""``: the
-    judge needs the earlier answer to tell new information from a report about it."""
-    answers = ask.get("answers") or []
-    last = answers[-1] if answers and isinstance(answers[-1], dict) else None
-    if last is not None:
+    """`` (already answered by <nick>: "<text>")`` (the first answer, and how many came
+    later) for an answered ask, else ``""``: the judge needs the earlier answer to tell new
+    information from a report about it."""
+    answers = [a for a in ask.get("answers") or [] if isinstance(a, dict)]
+    if answers:
+        # the FIRST answer: a later one may itself be a misattached line (review of #123)
+        first, more = answers[0], len(answers) - 1
+        extra = f" (+{more} later)" if more else ""
         return (
-            f' (already answered by {_clean(last.get("sender"), 40)}: '
-            f'"{_clean(last.get("text"), 160)}")'
+            f' (already answered by {_clean(first.get("sender"), 40)}: '
+            f'"{_clean(first.get("text"), 160)}"{extra})'
         )
     return " (already answered once)" if ask.get("status") == "answered" else ""
 
 
-#: A line that reports on its sender rather than answering (live run, 2026-11-01:
+#: A sentence in which the sender only reports on itself (live run, 2026-11-01:
 #: "I've responded to `spark-gwen`'s question ... I will continue to monitor `#general`"
-#: was accepted as a second answer). Checked BEFORE the judge or the rules, by pattern:
-#: such a line is never an answer, whatever a model would say. Narrow on purpose.
-_STATUS_RE = re.compile(
-    r"\bI(?:'ve| have)\s+(?:already\s+|just\s+)?(?:responded|replied|answered)\s+to\b"
-    # "I will (keep) monitor(ing)" announces; "I'm monitoring X" can answer "what are you
-    # doing?", so the present tense is left to the judge
-    r"|\bI(?:'ll| will)\s+(?:continu\w*\s+to\s+|keep\w*\s+)?monitor\w*\b"
-    r"|\bcontinu\w*\s+to\s+monitor\b"
-    r"|\bno new (?:messages|tasks)\b"
-    r"|עניתי ל|השבתי ל|אמשיך לעקוב|ממשיך לעקוב|ממשיכה לעקוב",
+#: was attached to an ask as a second answer). Anchored at the start of the sentence, so
+#: the subject is the sender, and narrow on purpose (review of #123): no colon (one
+#: introduces an answer), standby tails only ("for further tasks"), and nothing that can
+#: be the whole answer to a question ("no new tasks" can answer "anything pending?").
+_APOS = "['\u2019]"
+_STATUS_SENTENCE_RE = re.compile(
+    rf"^(?:I{_APOS}ve|I have)\s+(?:already\s+|just\s+)?(?:responded|replied|answered)\s+to\b[^:]*$"
+    rf"|^(?:I{_APOS}ll|I will)\s+(?:continu\w*\s+to\s+|keep\w*\s+)?monitor\w*\b[^:]*$"
+    rf"|^(?:I{_APOS}m|I am)\s+(?:still\s+)?continu\w*\s+to\s+monitor\b[^:]*"
+    r"\bfor\s+(?:any|further|new|more)\b[^:]*$"
+    r"|^I see that\s+\S+\s+has\s+(?:re)?joined\b[^:]*$"
+    r"|^(?:עניתי|השבתי)\s+ל[^:]*$|^(?:אמשיך|ממשיך|ממשיכה)\s+לעקוב[^:]*$",
     re.IGNORECASE,
 )
+#: Sentence ends; a nick prefix "<nick>" an agent may quote is not content.
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?;])\s+|\n+")
+_LEAD = re.compile(r"^\s*(?:<[^>\s]{1,64}>\s*)?")
 
 
 def is_status_line(text: str) -> bool:
-    """*text* reports on its sender (has answered, keeps monitoring): never an answer."""
-    return bool(isinstance(text, str) and _STATUS_RE.search(text))
+    """*text* is ONLY self-report (has answered, will keep monitoring): every sentence
+    is one, so the line carries no answer. A line with any other sentence is not."""
+    if not isinstance(text, str) or not text.strip():
+        return False
+    sentences = [_LEAD.sub("", part).strip(" \t`*_") for part in _SENTENCE_SPLIT.split(text)]
+    sentences = [s.rstrip(".!?;") for s in sentences if s]
+    return bool(sentences) and all(_STATUS_SENTENCE_RE.match(s) for s in sentences)
 
 
 def build_messages(

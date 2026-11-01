@@ -6648,13 +6648,16 @@ class DaemonApp:
         try:
             self._mesh_dispatch(lane, message, where)
         finally:
-            # Context for the next judgement: every line, after it was judged itself.
-            self._mesh_recent.add(where, message.sender, message.text, message.thread or None)
+            # Context for the next judgement: every line, after it was judged itself, except
+            # a pure self-report, which carries nothing and could read as "settled".
+            if not mesh_judge.is_status_line(message.text):
+                self._mesh_recent.add(where, message.sender, message.text, message.thread or None)
 
     def _mesh_dispatch(self, lane: MeshLane, message: MeshMessage, where: str) -> None:
         if mesh_judge.is_status_line(message.text):
-            # "I've responded to ...", "I will continue to monitor ...": a report, never an
-            # answer, so neither the judge nor the rules see it (live run, 2026-11-01)
+            # Every sentence is a self-report ("I've responded to ...", "I will continue to
+            # monitor ..."): no answer in it, so neither the judge nor the rules see it, and
+            # it is not joined to an answer as a continuation (live run, 2026-11-01)
             with self._lock:
                 self._mesh_counts["status_lines_skipped"] += 1
             if _mesh_addressed(message):
