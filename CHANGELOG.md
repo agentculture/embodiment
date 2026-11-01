@@ -11,7 +11,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Gwen speaks culture's presence contract (embodiment#121, part 1): after `001` her mesh client sets user mode `+A` and publishes `PRESENCE` (`idle`, `thinking` while any completion through the chat seam is in flight, `draining` on a graceful close), with a 25 s heartbeat while busy; the end-of-session summary counts as thinking too. Seen once on spark (2026-11-01, from a test daemon, not the always-on unit): `culture agents status` listed `spark-gwen idle` and `/residents.json` `backend: external`, where it had shown `offline`. `status.mesh.presence` shows the state, its `since` and the lines sent; a server without PRESENCE (`421`) or the mode (`501`) is recorded once, and after a `421` that connection publishes no more.
 - `/api/models` reports the live conversation's persona and the model and language chosen for it, and the page restores them after a reload instead of resetting the dock to the defaults.
+- `docs/live-test-results/2026-11-01-mesh-ask-and-presence.md`: the first live mesh ask (c33). Gwen posted, spark-associate answered in 39.6 s (n = 1) with a wrong answer, and the judge also accepted a status line. A second ask was claimed but never posted. Bolt answered (80.5 s) without needing the final step. Presence and the dock restore held.
 - Outside this repo: the [mockup artifact](https://claude.ai/artifact/PEUzLDEqvbEEc7DWN3LpuG) has a "Live reasoning" state (d5).
+
+### Fixed
+
+- Mesh ask and answer cards are no longer hidden on a typed-only page: they sat inside the voice-transcript section, which CSS hides while it is empty (found in the live run).
 
 ### Changed
 
