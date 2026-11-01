@@ -167,6 +167,64 @@ def _ask_once(h: Any, ircd: FakeIrcd) -> str:
     return _thread_of(ircd)
 
 
+# ── presence (embodiment#121) ────────────────────────────────────────────────
+
+
+def _presence_states(ircd: FakeIrcd) -> list[str]:
+    return [json.loads(line.split(" :", 1)[1])["state"] for line in ircd.sent("PRESENCE ")]
+
+
+class TestPresence:
+    def test_the_lane_gauge_drives_the_client_and_close_drains(
+        self, harness: Any, ircd: FakeIrcd, tmp_path: Path
+    ) -> None:
+        gauge = app_module.PresenceGauge()
+        h = _wired(harness, _lane(tmp_path, make_config(ircd), presence=gauge))
+        h.app.start()
+        _registered(h)
+        wait_for(lambda: _presence_states(ircd) == ["idle"])
+        assert ircd.sent("MODE spark-gwen +A")
+        with gauge.busy():
+            wait_for(lambda: _presence_states(ircd)[-1:] == ["thinking"])
+        wait_for(lambda: _presence_states(ircd)[-1:] == ["idle"])
+        assert h.app.status()["mesh"]["presence"]["state"] == "idle"
+        h.app.close(deadline=3.0)
+        wait_for(lambda: ircd.sent("QUIT"))
+        assert _presence_states(ircd)[-1] == "draining"
+        with gauge.busy():  # detached on stop: the closed client is told nothing
+            pass
+        assert gauge.failures == 0
+
+    def test_a_lane_without_a_gauge_still_publishes_idle(
+        self, harness: Any, ircd: FakeIrcd, tmp_path: Path
+    ) -> None:
+        h = _wired(harness, _lane(tmp_path, make_config(ircd)))
+        h.app.start()
+        _registered(h)
+        wait_for(lambda: _presence_states(ircd) == ["idle"])
+
+
+def test_the_gateway_seam_holds_thinking_for_the_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gauge = app_module.PresenceGauge()
+    seen: list[int] = []
+
+    def fake_complete(messages: Any, **kwargs: Any) -> ModelResponse:
+        seen.append(gauge.inflight)
+        return ModelResponse(content="ok")
+
+    monkeypatch.setattr(app_module, "http_complete", fake_complete)
+    seam = app_module.gateway_seam(
+        app_module.AppConfig(gateway_url="http://g.invalid"),
+        app_module.RoleHolder(),
+        presence=gauge,
+    )
+    assert seam([{"role": "user", "content": "q"}]).content == "ok"
+    assert seen == [1]
+    assert gauge.inflight == 0
+
+
 # ── criterion 1: the resident, ask_culture on every turn, agent turns ──────────
 
 
@@ -788,6 +846,7 @@ class TestMain:
             assert lane.config.enabled is True
             assert lane.config.nick == "spark-gwen"
             assert lane.judge == app_module.MESH_JUDGE_ROLE == "senses"
+            assert isinstance(lane.presence, app_module.PresenceGauge)
             assert built == []  # the client is built by start(), never by main()
             assert Path(lane.book._path).parent == Path(application._state.dir)
         finally:

@@ -42,6 +42,18 @@ The wire, as agentirc answers it (read from ``agentirc/client.py`` and
   outbound line is chunked under it, CRLF included. Text never reaches the wire
   with a CR, LF or NUL in it: each line becomes its own message.
 
+* **Presence** (culture ``protocol/extensions/presence.md``; agentirc
+  ``skills/presence.py``; asked in embodiment#121). After ``001`` the client sets
+  user mode ``+A`` — agentirc flips a row to ``offline`` on a TCP close only for a
+  ``+A``/``+C`` client, so without it a crashed daemon stays listed in its last
+  state — and publishes ``PRESENCE :{"state": ..., "since": ...}``, again on every
+  state change. The state comes only from code boundaries, never from a model:
+  :class:`PresenceGauge` holds ``thinking`` while any completion through the
+  daemon's chat seam is in flight and ``idle`` otherwise; a graceful close sends
+  ``draining`` before ``QUIT``. ``offline`` is the server's to set. A server that
+  answers ``421`` to ``PRESENCE`` or ``501`` to the mode is recorded once
+  (``mesh-presence-unsupported`` / ``mesh-mode-refused``) and the client goes on.
+
 Clocks, each derived from what it bounds:
 
 * ``connect_deadline`` bounds the TCP connect, ``register_deadline`` the wait
@@ -54,6 +66,10 @@ Clocks, each derived from what it bounds:
   client after 60 s and reaps it at 180 s, so a client that never sent its own
   PING would learn of a silently dead server only from the kernel; the client
   side bound is :attr:`MeshConfig.liveness_bound`.
+* ``presence_heartbeat`` re-sends a busy state's PRESENCE. agentirc's
+  ``heartbeat_interval_seconds`` defaults to 30 and its stale threshold to 90 (a
+  busy row older than that is flagged ``presumed_hung``), so 25 s keeps a row
+  fresh with one beat of slack. ``idle`` never goes stale and is not re-sent.
 
 Degrade, never raise: a refused connect, a drop, a timeout, a failing
 callback — each is a :class:`MeshDegradation` on a bounded ledger and a
@@ -65,13 +81,16 @@ text, a nick a remote party chose, or a secret.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import datetime
+import json
 import os
 import re
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass, replace
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Iterator, Mapping, Optional
 
 from embodiment.safe_reason import describe_exception
 
@@ -84,6 +103,8 @@ __all__ = [
     "ENV_NICK",
     "ENV_SERVER",
     "MAX_LINE_BYTES",
+    "PRESENCE_BUSY",
+    "PRESENCE_STATES",
     "THREAD_NAME_RE",
     "IrcLine",
     "MeshClient",
@@ -91,6 +112,7 @@ __all__ = [
     "MeshConfig",
     "MeshDegradation",
     "MeshMessage",
+    "PresenceGauge",
     "parse_line",
 ]
 
@@ -127,6 +149,17 @@ _QUIET_ENDINGS = (
 )
 
 _TERMINAL = frozenset({"nick-taken", "nick-refused", "stopped"})
+
+#: The six states of culture's PRESENCE contract (``protocol/extensions/presence.md``).
+PRESENCE_STATES = ("idle", "listening", "thinking", "working", "draining", "offline")
+#: The states agentirc flags ``presumed_hung`` when their heartbeat stops.
+PRESENCE_BUSY = frozenset({"listening", "thinking", "working", "draining"})
+
+
+def _utc_now() -> str:
+    """ISO-8601 UTC at second precision with ``Z``, the form agentirc stamps itself."""
+    now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+    return now.isoformat().replace("+00:00", "Z")
 
 
 # ── values ──────────────────────────────────────────────────────────────────
@@ -217,6 +250,8 @@ class MeshConfig:
     backoff_max: float = 30.0
     ping_interval: float = 60.0
     ping_timeout: float = 30.0
+    #: Under agentirc's 30 s ``heartbeat_interval_seconds`` (stale at 90 s).
+    presence_heartbeat: float = 25.0
     close_deadline: float = 3.0
     #: A configuration problem found by :meth:`from_env`; the client records it
     #: and stays off rather than raising.
@@ -402,7 +437,10 @@ class MeshClient:
             "received": 0,
             "delivered": 0,
             "dropped_sends": 0,
+            "presence_sent": 0,
         }
+        self._presence = ("idle", _utc_now())
+        self._presence_wake: Optional[asyncio.Event] = None
         self._joined: set[str] = set()
         self._server_name = ""
         self._who_done: dict[str, frozenset[str]] = {}
@@ -456,6 +494,7 @@ class MeshClient:
                 "joined": sorted(self._joined),
                 "servers": list(servers),
                 "message_tags": self._message_tags,
+                "presence": {"state": self._presence[0], "since": self._presence[1]},
                 "counts": dict(self._counts),
                 "reconnect_bound": self._config.reconnect_bound,
                 "liveness_bound": self._config.liveness_bound,
@@ -555,6 +594,51 @@ class MeshClient:
                 )
         except Exception:  # noqa: BLE001  # close never raises
             return MeshCloseReport(close_error=True)
+
+    # ── presence (any thread) ──────────────────────────────────────────────
+    def set_presence(self, state: str) -> bool:
+        """Publish *state* (one of :data:`PRESENCE_STATES`). ``False``: unknown state.
+
+        The same state twice is no change and sends nothing (edge-triggered); a
+        new one is sent now if registered, else after the next ``001``."""
+        if state not in PRESENCE_STATES:
+            return False
+        with self._lock:
+            if self._presence[0] == state:
+                return True
+            self._presence = (state, _utc_now())
+            loop, wake = self._loop, self._presence_wake
+        if loop is not None and wake is not None:
+            try:
+                loop.call_soon_threadsafe(wake.set)
+            except RuntimeError:  # loop closed: the next session publishes it
+                pass
+        return True
+
+    def presence(self) -> dict[str, Any]:
+        """What was last set to publish: ``state``, ``since``, and lines ``sent``."""
+        with self._lock:
+            state, since = self._presence
+            return {"state": state, "since": since, "sent": self._counts["presence_sent"]}
+
+    def _presence_line(self) -> str:
+        with self._lock:
+            state, since = self._presence
+        payload = json.dumps({"state": state, "since": since}, separators=(",", ":"))
+        return f"PRESENCE :{payload}"
+
+    async def _beat(self, outbox: "asyncio.Queue[str]", wake: asyncio.Event) -> None:
+        """Send PRESENCE on each change, and every ``presence_heartbeat`` while busy."""
+        while True:
+            with self._lock:
+                busy = self._presence[0] in PRESENCE_BUSY
+            timeout = float(self._config.presence_heartbeat) if busy else None
+            try:
+                await asyncio.wait_for(wake.wait(), timeout=timeout)
+            except TimeoutError:
+                pass
+            wake.clear()
+            outbox.put_nowait(self._presence_line())
 
     # ── send (any thread) ──────────────────────────────────────────────────
     def send(self, target: str, text: str) -> bool:
@@ -750,13 +834,25 @@ class MeshClient:
     ) -> None:
         outbox: asyncio.Queue[str] = asyncio.Queue()
         self._outbox = outbox
+        wake = asyncio.Event()
+        self._presence_wake = wake  # before the first line, so no change falls between
+        writer.write(f"MODE {self._config.nick} +A\r\n".encode())
+        writer.write((self._presence_line() + "\r\n").encode("utf-8"))
+        self._count("presence_sent")
         for channel in self._config.channels:
             writer.write(f"JOIN {channel}\r\n".encode())
         await writer.drain()
         pump = asyncio.ensure_future(self._pump(outbox, writer))
+        beat = asyncio.ensure_future(self._beat(outbox, wake))
         try:
             await self._read_registered(reader, writer, pump)
         finally:
+            self._presence_wake = None
+            beat.cancel()
+            try:
+                await beat
+            except _QUIET_ENDINGS:
+                pass
             self._outbox = None
             left = outbox.qsize()
             if left:
@@ -775,6 +871,7 @@ class MeshClient:
         while True:
             line = await outbox.get()
             counted = line.startswith(("PRIVMSG", "THREAD"))
+            presence = line.startswith("PRESENCE ")
             try:
                 writer.write((line + "\r\n").encode("utf-8"))
                 await writer.drain()
@@ -784,6 +881,8 @@ class MeshClient:
                 raise
             if counted:
                 self._count("sent")
+            elif presence:
+                self._count("presence_sent")
 
     async def _read_registered(
         self,
@@ -830,10 +929,16 @@ class MeshClient:
             "352": (5, lambda: self._on_who_reply(msg)),
             "315": (2, lambda: self._on_who_end(msg)),
             "PRIVMSG": (2, lambda: self._deliver(msg)),
+            "421": (2, lambda: self._on_unknown_command(msg)),
+            "501": (1, lambda: self._record("mesh-mode-refused", "501", streak=True)),
         }
         entry = handlers.get(command)
         if entry is not None and len(msg.params) >= entry[0]:
             entry[1]()
+
+    def _on_unknown_command(self, msg: IrcLine) -> None:
+        if msg.params[1].upper() == "PRESENCE":
+            self._record("mesh-presence-unsupported", "421 PRESENCE", streak=True)
 
     def _on_cap(self, msg: IrcLine) -> None:
         if msg.params[1].upper() == "ACK" and "message-tags" in msg.params[2].split():
@@ -925,6 +1030,9 @@ class MeshClient:
             budget = self._close_budget
         try:
             if quit_first:
+                with self._lock:
+                    self._presence = ("draining", _utc_now())
+                writer.write((self._presence_line() + "\r\n").encode("utf-8"))
                 writer.write(b"QUIT :Gwen is leaving\r\n")
                 await asyncio.wait_for(writer.drain(), timeout=max(0.01, budget / 2))
         except OSError:  # TimeoutError and ConnectionError are OSErrors
@@ -937,3 +1045,55 @@ class MeshClient:
         except Exception:  # noqa: BLE001  # a raising close is reported, not raised
             with self._lock:
                 self._close_error = True
+
+
+class PresenceGauge:
+    """Gwen's ``thinking`` / ``idle`` from the one boundary that shows it: a completion.
+
+    The daemon wraps every completion through its chat seam in :meth:`busy`; the
+    gauge counts the ones in flight (a typed turn, a spoken turn and the judge can
+    overlap) and tells the attached client only on an edge: the first in is
+    ``thinking``, the last out is ``idle``. No client attached is a no-op, so the
+    seam never depends on the mesh being up. Thread-safe.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._inflight = 0
+        self._client: Any = None
+        #: A client whose ``set_presence`` raised: counted, never raised into the seam.
+        self.failures = 0
+
+    def attach(self, client: Any) -> None:
+        """Report to *client* (``None`` detaches); it is told the current state now."""
+        with self._lock:
+            self._client = client
+            state = "thinking" if self._inflight else "idle"
+        if client is not None:
+            client.set_presence(state)
+
+    @property
+    def inflight(self) -> int:
+        with self._lock:
+            return self._inflight
+
+    @contextlib.contextmanager
+    def busy(self) -> Iterator[None]:
+        self._step(+1)
+        try:
+            yield
+        finally:
+            self._step(-1)
+
+    def _step(self, by: int) -> None:
+        with self._lock:
+            before = self._inflight
+            self._inflight = max(0, before + by)
+            edge = (before == 0) != (self._inflight == 0)
+            client, state = self._client, ("thinking" if self._inflight else "idle")
+        if edge and client is not None:
+            try:
+                client.set_presence(state)
+            except Exception:  # noqa: BLE001  # presence must never fail a completion
+                with self._lock:
+                    self.failures += 1

@@ -215,7 +215,7 @@ from embodiment.mesh_asks import (
     THREAD_PREFIX,
     AskBook,
 )
-from embodiment.mesh_client import MeshClient, MeshConfig, MeshMessage
+from embodiment.mesh_client import MeshClient, MeshConfig, MeshMessage, PresenceGauge
 from embodiment.perception import perceive
 from embodiment.persona_prompt import compose_base, english_tool_prompts, tool_prompt_language
 from embodiment.personas import (
@@ -2195,8 +2195,20 @@ class RoleHolder:
         return bool(getattr(self._tls, "stream", False))
 
 
-def gateway_seam(config: "AppConfig", holder: RoleHolder) -> Callable[..., ModelResponse]:
-    """The daemon's chat seam: :func:`http_complete` on the role *holder* names."""
+def _mesh_presence(client: Any) -> Optional[dict[str, Any]]:
+    """``status.mesh.presence`` (#121): what Gwen last published, and how many lines;
+    ``None`` from a client without :meth:`MeshClient.presence` (which never raises)."""
+    reader = getattr(client, "presence", None)
+    return dict(reader()) if callable(reader) else None
+
+
+def gateway_seam(
+    config: "AppConfig", holder: RoleHolder, presence: Optional[PresenceGauge] = None
+) -> Callable[..., ModelResponse]:
+    """The daemon's chat seam: :func:`http_complete` on the role *holder* names.
+
+    With *presence* every completion runs inside :meth:`PresenceGauge.busy`, so the
+    mesh row reads ``thinking`` exactly while a model call is in flight (#121)."""
 
     def seam(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
         role, deadline = holder.current()
@@ -2204,16 +2216,17 @@ def gateway_seam(config: "AppConfig", holder: RoleHolder) -> Callable[..., Model
         stream = holder.streams() or sink is not None
         if stream:
             _feed(sink, STREAM_STEP, "")  # a new model step: the page starts a fresh view
-        return http_complete(
-            messages,
-            tools=tools,
-            gateway_url=config.gateway_url,
-            api_key=config.api_key,
-            role=role,
-            deadline=deadline,
-            stream=stream,
-            on_delta=sink,
-        )
+        with presence.busy() if presence is not None else contextlib.nullcontext():
+            return http_complete(
+                messages,
+                tools=tools,
+                gateway_url=config.gateway_url,
+                api_key=config.api_key,
+                role=role,
+                deadline=deadline,
+                stream=stream,
+                on_delta=sink,
+            )
 
     return seam
 
@@ -2391,6 +2404,9 @@ class MeshLane:
     #: seam as that role, under :data:`mesh_judge.JUDGE_DEADLINE_S`; a callable
     #: ``messages -> reply`` is used as is (tests).
     judge: Any = None
+    #: Gwen's PRESENCE source (#121): the gauge the chat seam drives; each client
+    #: :meth:`DaemonApp.start` builds is attached to it, and detached on stop.
+    presence: Optional[PresenceGauge] = None
 
 
 @dataclass(eq=False)
@@ -6409,6 +6425,8 @@ class DaemonApp:
             return
         try:
             client = lane.client_factory(lane.config, self._on_mesh_message)
+            if lane.presence is not None:
+                lane.presence.attach(client)  # before start: the first 001 carries it
             client.start()
         except Exception as exc:  # noqa: BLE001  # degrade, never raise: no mesh this run
             self._record(APP_MESH_DOWN, f"client: {_describe(exc)}", source="mesh")
@@ -6421,6 +6439,8 @@ class DaemonApp:
         if lane is None:
             return True
         self._mesh_stop.set()
+        if lane.presence is not None:
+            lane.presence.attach(None)
         share = max(0.05, float(deadline) / 2)
         client = self._mesh_client
         graceful = True
@@ -7059,12 +7079,14 @@ class DaemonApp:
         client = self._mesh_client
         state = "off"
         servers: tuple[str, ...] = ()
+        presence: Optional[dict[str, Any]] = None
         if client is not None:
             state = str(getattr(client, "state", "") or "unknown")
             try:
                 servers = tuple(client.servers())
             except Exception:  # noqa: BLE001  # a probe that fails reads as none visible
                 servers = ()
+            presence = _mesh_presence(client)
         try:
             asks = lane.book.all()
         except Exception:  # noqa: BLE001  # the book never raises; belt and braces
@@ -7086,6 +7108,7 @@ class DaemonApp:
             "nick_retry_pending": retry_pending,
             "notices": self._mesh_notices.status(),
             "conversations": len(self.mesh_conversations()),
+            "presence": presence,
         }
 
     def _library_list(self) -> dict[str, Any]:
@@ -10388,10 +10411,11 @@ def main() -> DaemonApp:
         ),
         # "Was it for me?" on the small local model (operator, 2026-10-31).
         judge=MESH_JUDGE_ROLE,
+        presence=PresenceGauge(),
     )
 
     holder = RoleHolder(config.role, config.completion_deadline)
-    seam = gateway_seam(config, holder)
+    seam = gateway_seam(config, holder, presence=mesh.presence)
     summarise = gateway_summariser(config)
     # The chat roles the gateway serves, polled from start (t2, t12). Its failures
     # are recorded ONCE per code: a dead gateway is a degradation, never a raise,

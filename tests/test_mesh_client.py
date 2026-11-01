@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import re
 import threading
 import time
 from pathlib import Path
@@ -658,7 +659,10 @@ def test_stdlib_only_and_no_subprocess():
         "__future__",
         "asyncio",
         "collections",
+        "contextlib",  # PresenceGauge.busy (#121)
         "dataclasses",
+        "datetime",  # PRESENCE "since" (#121)
+        "json",  # the PRESENCE payload (#121)
         "os",
         "re",
         "threading",
@@ -737,3 +741,172 @@ def test_a_line_whose_drain_is_cancelled_is_a_dropped_send_not_lost(ircd: Any) -
     counts = client.status()["counts"]
     assert counts["sent"] == 0
     assert counts["dropped_sends"] == 1
+
+
+# ── presence (embodiment#121, culture protocol/extensions/presence.md) ──────
+
+
+def _presences(ircd: FakeIrcd) -> list[dict[str, Any]]:
+    import json
+
+    return [json.loads(line.split(" :", 1)[1]) for line in ircd.sent("PRESENCE ")]
+
+
+def test_registration_sets_mode_a_and_publishes_idle(ircd, started):
+    client = started(make_config(ircd))
+    wait_for(lambda: ircd.sent("PRESENCE "))
+    assert ircd.sent("MODE ") == ["MODE spark-gwen +A"]
+    first = _presences(ircd)[0]
+    assert first["state"] == "idle"
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", first["since"])
+    assert client.status()["presence"]["state"] == "idle"
+
+
+def test_mode_and_presence_come_before_join(ircd, started):
+    started(make_config(ircd))
+    wait_for(lambda: ircd.sent("JOIN "))
+    commands = [line.split(" ", 1)[0] for line in ircd.lines]
+    assert commands.index("MODE") < commands.index("JOIN")
+    assert commands.index("PRESENCE") < commands.index("JOIN")
+
+
+def test_a_state_change_is_published_once(ircd, started):
+    client = started(make_config(ircd))
+    wait_for(lambda: client.state == "registered" and ircd.sent("PRESENCE "))
+    assert client.set_presence("thinking") is True
+    assert client.set_presence("thinking") is True  # no change: nothing sent
+    wait_for(lambda: len(ircd.sent("PRESENCE ")) == 2)
+    time.sleep(0.1)
+    assert [p["state"] for p in _presences(ircd)] == ["idle", "thinking"]
+    wait_for(lambda: client.status()["counts"]["presence_sent"] == 2)
+
+
+def test_unknown_state_is_refused(ircd, started):
+    client = started(make_config(ircd))
+    assert client.set_presence("asleep") is False
+    assert client.status()["presence"]["state"] == "idle"
+
+
+def test_busy_state_heartbeats_with_its_own_since(ircd, started):
+    client = started(make_config(ircd, presence_heartbeat=0.1))
+    wait_for(lambda: client.state == "registered")
+    client.set_presence("thinking")
+    wait_for(lambda: len(ircd.sent("PRESENCE ")) >= 4)
+    beats = [p for p in _presences(ircd) if p["state"] == "thinking"]
+    assert len({p["since"] for p in beats}) == 1
+
+
+def test_idle_is_not_heartbeated(ircd, started):
+    client = started(make_config(ircd, presence_heartbeat=0.05))
+    wait_for(lambda: client.state == "registered" and ircd.sent("PRESENCE "))
+    time.sleep(0.3)
+    assert len(ircd.sent("PRESENCE ")) == 1
+
+
+def test_state_set_before_registration_is_the_first_published(ircd, started):
+    client = MeshClient(make_config(ircd))
+    client.set_presence("thinking")
+    client.start()
+    try:
+        wait_for(lambda: ircd.sent("PRESENCE "))
+        assert _presences(ircd)[0]["state"] == "thinking"
+    finally:
+        client.close(2.0)
+
+
+def test_graceful_close_sends_draining_before_quit(ircd, started):
+    client = started(make_config(ircd))
+    wait_for(lambda: client.state == "registered" and ircd.sent("PRESENCE "))
+    client.close(2.0)
+    wait_for(lambda: ircd.sent("QUIT"))
+    lines = list(ircd.lines)
+    drain = next(i for i, line in enumerate(lines) if '"draining"' in line)
+    assert drain < lines.index(next(line for line in lines if line.startswith("QUIT")))
+
+
+def test_a_server_without_presence_is_recorded_once(ircd, started):
+    client = started(make_config(ircd))
+    wait_for(lambda: client.state == "registered")
+    ircd.push(":spark 421 spark-gwen PRESENCE :Unknown command")
+    ircd.push(":spark 421 spark-gwen PRESENCE :Unknown command")
+    ircd.push(":spark 501 spark-gwen :Unknown MODE flag")
+    wait_for(lambda: any(d.code == "mesh-mode-refused" for d in client.degradations))
+    codes = [d.code for d in client.degradations]
+    assert codes.count("mesh-presence-unsupported") == 1
+    assert client.state == "registered"
+
+
+def test_a_421_for_another_command_is_not_a_presence_record(ircd, started):
+    client = started(make_config(ircd))
+    wait_for(lambda: client.state == "registered")
+    ircd.push(":spark 421 spark-gwen FOO :Unknown command")
+    ircd.push(":spark 501 spark-gwen :Unknown MODE flag")
+    wait_for(lambda: any(d.code == "mesh-mode-refused" for d in client.degradations))
+    assert all(d.code != "mesh-presence-unsupported" for d in client.degradations)
+
+
+class _Recorder:
+    def __init__(self, fail: bool = False) -> None:
+        self.states: list[str] = []
+        self.fail = fail
+
+    def set_presence(self, state: str) -> bool:
+        self.states.append(state)
+        if self.fail:
+            raise RuntimeError("boom")
+        return True
+
+
+def test_gauge_reports_edges_only_across_overlapping_calls():
+    gauge = mc.PresenceGauge()
+    rec = _Recorder()
+    gauge.attach(rec)
+    with gauge.busy():
+        with gauge.busy():
+            assert gauge.inflight == 2
+        assert gauge.inflight == 1
+    assert gauge.inflight == 0
+    assert rec.states == ["idle", "thinking", "idle"]
+
+
+def test_gauge_tells_a_late_client_the_current_state():
+    gauge = mc.PresenceGauge()
+    rec = _Recorder()
+    with gauge.busy():
+        gauge.attach(rec)
+    assert rec.states == ["thinking", "idle"]
+
+
+def test_gauge_without_a_client_is_a_no_op():
+    gauge = mc.PresenceGauge()
+    with gauge.busy():
+        pass
+    assert gauge.inflight == 0
+
+
+def test_gauge_counts_a_raising_client_and_never_raises():
+    gauge = mc.PresenceGauge()
+    rec = _Recorder()
+    gauge.attach(rec)
+    rec.fail = True
+    with gauge.busy():
+        pass
+    assert gauge.failures == 2
+    assert gauge.inflight == 0
+
+
+def test_gauge_releases_on_an_exception_inside():
+    gauge = mc.PresenceGauge()
+    rec = _Recorder()
+    gauge.attach(rec)
+    with pytest.raises(ValueError):
+        with gauge.busy():
+            raise ValueError("completion failed")
+    assert rec.states[-1] == "idle"
+    assert gauge.inflight == 0
+
+
+def test_presence_reader_counts_lines_sent(ircd, started):
+    client = started(make_config(ircd))
+    wait_for(lambda: client.presence()["sent"] == 1)
+    assert client.presence()["state"] == "idle"
