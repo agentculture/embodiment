@@ -149,7 +149,7 @@ from embodiment.loop import EXIT_BUDGET, LoopAborted, LoopControls, LoopOutcome
 from embodiment.loop import run as loop_run
 from embodiment.perception import perceive
 from embodiment.safe_reason import describe_exception
-from embodiment.tools import BOUND_REGISTRY_ATTR, ToolRegistry
+from embodiment.tools import BOUND_REGISTRY_ATTR, ToolRegistry, tools_withheld
 
 __all__ = [
     "SYSTEM_PROMPT",
@@ -217,6 +217,15 @@ DEGRADED_TOOLS_UNBOUND = "turn-tools-unbound"
 DEGRADED_SEAM_ABORTED = "turn-seam-aborted"
 #: Intake degraded; the operator's verbatim words still survived.
 DEGRADED_PERCEPTION = "turn-perception-degraded"
+#: Every step but the last asked for a tool, so the last went out with none: the
+#: model had to answer from what the tools returned (t12/c8: Nemotron Bolt looped).
+DEGRADED_FINAL_WITHOUT_TOOLS = "turn-final-step-without-tools"
+
+#: Appended (to that one call only) when the last step is sent without tools.
+FINAL_STEP_PROMPT = (
+    "You have used every tool step of this turn. Answer now, from what the tools "
+    "returned; no more tools are available."
+)
 
 #: Cap on one degradation's reason text, as every sibling lane caps its own.
 _MAX_REASON_LEN = 500
@@ -353,9 +362,19 @@ class _Recorder:
 
     complete: Callable[[list[dict[str, Any]]], ModelResponse]
     responses: list[ModelResponse] = field(default_factory=list)
+    #: The 1-based call sent without tools (the loop's last step), or 0 for none.
+    final_step: int = 0
+    final_used: bool = False
 
     def __call__(self, messages: list[dict[str, Any]]) -> ModelResponse:
-        response = self.complete(messages)
+        if self.final_step and len(self.responses) + 1 == self.final_step:
+            self.final_used = True
+            with tools_withheld():
+                response = self.complete(
+                    [*messages, {"role": "user", "content": FINAL_STEP_PROMPT}]
+                )
+        else:
+            response = self.complete(messages)
         self.responses.append(response)
         return response
 
@@ -432,11 +451,23 @@ def turn(
         engine=cfg.engine,
         context_packet=packet,
     )
-    recorder = _Recorder(complete=complete)
+    # The last step goes out without tools when there are tools to withhold and a
+    # step before it to use them: the loop's budget is unchanged, but a model that
+    # would call tools forever has to answer (t12/c8).
+    final_step = cfg.max_steps if not registry.empty and cfg.max_steps >= 2 else 0
+    recorder = _Recorder(complete=complete, final_step=final_step)
 
     outcome, aborted = _drive(recorder, task, registry, cfg)
     if aborted is not None:
         degradations.append(_degradation(DEGRADED_SEAM_ABORTED, aborted))
+    if recorder.final_used:
+        degradations.append(
+            TurnDegradation(
+                DEGRADED_FINAL_WITHOUT_TOOLS,
+                f"steps 1-{final_step - 1} each asked for a tool; step {final_step} "
+                "was sent without tools",
+            )
+        )
 
     degradations.extend(
         TurnDegradation(code=entry.code, reason=_short(entry.reason))
