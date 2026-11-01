@@ -1006,6 +1006,62 @@ class TestTheJudge:
         assert "anyone for lunch?" in body
         assert ANSWER in body
 
+    def test_a_status_line_is_never_an_answer_and_costs_no_judge_call(
+        self, harness: Any, ircd: FakeIrcd, tmp_path: Path
+    ) -> None:
+        # The judge would say yes: the filter must decide before it is asked (live run).
+        judge = Judge('{"answers": "Q1"}', '{"answers": "Q1"}')
+        h = self._asked(harness, ircd, tmp_path, judge)
+        _push_thread_answer(ircd, h.thread, ANSWER)
+        wait_for(lambda: h.app.status()["mesh"]["asks_answered"] == 1)
+        status = (
+            "I've responded to `spark-gwen`'s question regarding the server version. "
+            "I will continue to monitor `#general` for any further inquiries."
+        )
+        _push_thread_answer(ircd, h.thread, status)
+        _push_line(ircd, status)
+        wait_for(lambda: h.app.status()["mesh"]["status_lines_skipped"] == 2)
+        mesh = h.app.status()["mesh"]
+        assert mesh["asks_answered"] == 1
+        assert mesh["judge_calls"] == 1  # only the real answer was judged
+        assert len(_mesh_events(h, "answer_arrived")) == 1
+
+    def test_an_answer_with_a_status_sentence_beside_it_still_lands(
+        self, harness: Any, ircd: FakeIrcd, tmp_path: Path
+    ) -> None:
+        judge = Judge('{"answers": "Q1"}')
+        h = self._asked(harness, ircd, tmp_path, judge)
+        mixed = "The version is 9.14.0. I'll keep monitoring the rollout."
+        _push_thread_answer(ircd, h.thread, mixed)
+        arrived = wait_for(lambda: _mesh_events(h, "answer_arrived"))
+        assert arrived[0].data["text"] == mixed
+        assert h.app.status()["mesh"]["status_lines_skipped"] == 0
+
+    def test_a_pure_status_line_is_kept_out_of_the_judges_context(
+        self, harness: Any, ircd: FakeIrcd, tmp_path: Path
+    ) -> None:
+        judge = Judge('{"answers": null}')
+        h = self._asked(harness, ircd, tmp_path, judge)
+        _push_line(ircd, "I will continue to monitor #general for any further inquiries.")
+        wait_for(lambda: h.app.status()["mesh"]["status_lines_skipped"] == 1)
+        _push_line(ircd, "anyone for lunch?", sender="spark-bob")
+        wait_for(lambda: h.app.status()["mesh"]["judge_calls"] == 1)
+        body = judge.calls[0][1]["content"]
+        assert "continue to monitor" not in body
+        assert "anyone for lunch?" in body
+
+    def test_the_judge_sees_the_earlier_answer(
+        self, harness: Any, ircd: FakeIrcd, tmp_path: Path
+    ) -> None:
+        judge = Judge('{"answers": "Q1"}', '{"answers": null}')
+        h = self._asked(harness, ircd, tmp_path, judge)
+        _push_thread_answer(ircd, h.thread, ANSWER)
+        wait_for(lambda: h.app.status()["mesh"]["asks_answered"] == 1)
+        _push_line(ircd, "thanks all", sender="spark-bob")
+        wait_for(lambda: h.app.status()["mesh"]["judge_calls"] == 2)
+        body = judge.calls[1][1]["content"]
+        assert f'already answered by {AGENT}: "{ANSWER}"' in body
+
     def test_a_thread_line_the_judge_rejects_is_not_an_answer(
         self, harness: Any, ircd: FakeIrcd, tmp_path: Path
     ) -> None:

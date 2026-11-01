@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
+
 from embodiment import mesh_judge as mj
 
 ASKS = [
@@ -154,3 +156,82 @@ def test_a_model_response_object_is_read_too() -> None:
     )
     assert verdict.ok
     assert verdict.ask_id == "a1"
+
+
+# ── status lines (live run, 2026-11-01; narrowed by the review of #123) ──────
+
+LIVE_STATUS = [
+    "I've responded to `spark-gwen`'s question regarding the server version. "
+    "I will continue to monitor `#general` for any further inquiries.",
+    "I see that `spark-gwen` has joined `#general` again. I am continuing to monitor the "
+    "channel for any tasks or coordination requests.",
+    # live 2026-11-01 ~19:50 UTC, without "that": it reached the judge (which rejected it)
+    "I see `spark-gwen` has joined `#general` again. I am continuing to monitor the "
+    "channels for any tasks or coordination requests.",
+    # accepted as answers by the old code (one by the fallback rule, no judge)
+    "I have responded to `spark-gwen`'s question about my current activity. I am "
+    "continuing to monitor `#general` and other channels for any further instructions.",
+    "I have responded to `spark-gwen` regarding my current task. I will continue to "
+    "monitor the mesh channels for further instructions.",
+]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        *LIVE_STATUS,
+        "I\u2019ve replied to spark-gwen.",  # the typographic apostrophe models emit
+        "I have already replied to spark-gwen.",
+        "עניתי ל-spark-gwen. אמשיך לעקוב.",
+    ],
+)
+def test_a_line_of_pure_self_report_is_recognised(text: str) -> None:
+    assert mj.is_status_line(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # an answer with a self-report beside it keeps the answer (review of #123)
+        "The version is 9.14.0. I'll keep monitoring the rollout.",
+        "I've replied to your question: it's 9.14",
+        "עניתי לך: הגרסה 9.14",
+        "Grafana continues to monitor them; it's at 61C",
+        "I'll keep monitoring; 9.15 lands tonight.",
+        # can be the whole answer to "anything pending?" / "what are you doing?"
+        "Nothing right now, no new tasks have arrived since 10:00.",
+        "No new tasks have arrived.",
+        "I am continuing to monitor the mesh channels and the build on thor",
+        "I am continuing to monitor the mesh channels. No new messages or tasks have arrived.",
+        # real answers to "what are you working on?", live 2026-11-01
+        "<spark-gwen> I'm currently in monitoring mode, watching the mesh channels for new "
+        "tasks or coordination requests.",
+        "<spark-gwen> I'm currently monitoring the mesh channels and awaiting new tasks.",
+        "<spark-gwen> The spark server is running `associate` version 0.10.0.",
+        "agentirc 9.14.0 is running on spark.",
+        "",
+    ],
+)
+def test_a_line_with_any_other_content_is_not_a_status_line(text: str) -> None:
+    assert not mj.is_status_line(text)
+
+
+def test_the_prompt_says_a_report_is_not_an_answer() -> None:
+    messages, _ = mj.build_messages("spark-gwen", [], [], "spark-ada", "x")
+    assert "only reports on itself does NOT answer" in messages[0]["content"]
+
+
+def test_an_answered_ask_shows_its_first_answer_and_how_many_followed() -> None:
+    ask = {
+        "ask_id": "a1",
+        "text": "which version?",
+        "status": "answered",
+        "answers": [
+            {"sender": "spark-ada", "text": "9.14"},
+            {"sender": "spark-bob", "text": "a misattached line"},
+        ],
+    }
+    messages, _ = mj.build_messages("spark-gwen", [ask], [], "spark-ada", "x")
+    body = messages[1]["content"]
+    assert 'Q1 (already answered by spark-ada: "9.14" (+1 later)): which version?' in body
+    assert "misattached" not in body
