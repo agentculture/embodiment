@@ -1164,7 +1164,8 @@ class TestTheFinalStepHasNoTools:
 
         result = turn("מה השעה?", bind_tools(seam, registry), tools=registry, config=TurnConfig())
         assert result.spoken == "השעה 12."
-        assert len(seen) == 2 and all(seen)
+        assert len(seen) == 2
+        assert all(seen)
         assert result.degradations == ()
 
     def test_no_tools_or_one_step_withholds_nothing(self) -> None:

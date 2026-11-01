@@ -820,42 +820,51 @@ class MeshClient:
         self._writer = writer
         registered = False
         try:
-            if cfg.sasl_secret:
-                # IRCv3 negotiation: the server holds 001 until CAP END (agentirc 9.14).
-                self._sasl_phase, self._sasl_caps = "ls", []
-                with self._lock:
-                    if self._sasl != "refused":
-                        self._sasl = "pending"
-                writer.write(b"CAP LS 302\r\n")
-                writer.write(f"NICK {cfg.nick}\r\n".encode())
-                writer.write(b"USER gwen 0 * :Gwen\r\n")
-            else:
-                writer.write(b"CAP REQ :message-tags\r\n")
-                writer.write(f"NICK {cfg.nick}\r\n".encode())
-                writer.write(b"USER gwen 0 * :Gwen\r\n")
-                writer.write(b"CAP END\r\n")
+            self._open(writer)
             await writer.drain()
             await self._register(reader, writer)
             registered = True
             await self._run_registered(reader, writer)
             return "stopped"
         except _Dropped as drop:
-            if drop.code in _TERMINAL:
-                if drop.code == "sasl-refused":
-                    with self._lock:
-                        self._sasl = "refused"
-                if drop.code != "stopped":
-                    self._set_state(drop.code)
-                    self._record(f"mesh-{drop.code}", drop.reason)
-                return drop.code
-            self._record(f"mesh-{drop.code}", drop.reason, streak=not registered)
-            return "registered" if registered else "failed"
+            return self._dropped(drop, registered)
         except (OSError, ValueError, asyncio.IncompleteReadError) as exc:
             code = "mesh-connection-dropped" if registered else "mesh-connect-failed"
             self._record(code, describe_exception(exc), streak=not registered)
             return "registered" if registered else "failed"
         finally:
             await self._teardown(writer, quit_first=registered and stop.is_set())
+
+    def _open(self, writer: asyncio.StreamWriter) -> None:
+        """The opening lines. With a secret, IRCv3 negotiation: the server holds 001
+        until CAP END (agentirc 9.14). Without one, byte-identical to before SASL."""
+        cfg = self._config
+        if cfg.sasl_secret:
+            self._sasl_phase, self._sasl_caps = "ls", []
+            with self._lock:
+                if self._sasl != "refused":
+                    self._sasl = "pending"
+            writer.write(b"CAP LS 302\r\n")
+            writer.write(f"NICK {cfg.nick}\r\n".encode())
+            writer.write(b"USER gwen 0 * :Gwen\r\n")
+            return
+        writer.write(b"CAP REQ :message-tags\r\n")
+        writer.write(f"NICK {cfg.nick}\r\n".encode())
+        writer.write(b"USER gwen 0 * :Gwen\r\n")
+        writer.write(b"CAP END\r\n")
+
+    def _dropped(self, drop: "_Dropped", registered: bool) -> str:
+        """How a session that raised ``_Dropped`` ended: terminal codes stop the lane."""
+        if drop.code not in _TERMINAL:
+            self._record(f"mesh-{drop.code}", drop.reason, streak=not registered)
+            return "registered" if registered else "failed"
+        if drop.code == "sasl-refused":
+            with self._lock:
+                self._sasl = "refused"
+        if drop.code != "stopped":
+            self._set_state(drop.code)
+            self._record(f"mesh-{drop.code}", drop.reason)
+        return drop.code
 
     async def _readline(self, reader: asyncio.StreamReader, wait_s: float) -> Optional[str]:
         """One line, or ``None`` after *wait_s*; EOF raises ``_Dropped``; stop raises it too."""
@@ -893,22 +902,27 @@ class MeshClient:
             if raw is None:
                 continue
             msg = parse_line(raw)
-            if msg is None:
-                continue
-            if msg.command == "001":
-                self._on_welcome(msg)
+            if msg is not None and self._register_line(msg, writer):
                 return
-            if msg.command == "433":
-                raise _Dropped("nick-taken", "433 ERR_NICKNAMEINUSE")
-            if msg.command == "432":
-                raise _Dropped("nick-refused", "432 ERR_ERRONEUSNICKNAME")
-            if self._sasl_phase and self._sasl_step(msg, writer):
-                continue
-            if msg.command in _SASL_PERMANENT and not self._config.sasl_secret:
-                # The nick now has an account and this daemon holds no secret: retrying
-                # would only feed the server's failure limiter.
-                raise _Dropped("sasl-refused", f"{msg.command}: the nick needs an account")
-            self._handle_common(msg, writer)
+
+    def _register_line(self, msg: IrcLine, writer: asyncio.StreamWriter) -> bool:
+        """One line before 001; ``True`` on 001. Refusals raise ``_Dropped``."""
+        command = msg.command
+        if command == "001":
+            self._on_welcome(msg)
+            return True
+        if command == "433":
+            raise _Dropped("nick-taken", "433 ERR_NICKNAMEINUSE")
+        if command == "432":
+            raise _Dropped("nick-refused", "432 ERR_ERRONEUSNICKNAME")
+        if self._sasl_phase and self._sasl_step(msg, writer):
+            return False
+        if command in _SASL_PERMANENT and not self._config.sasl_secret:
+            # The nick now has an account and this daemon holds no secret: retrying
+            # would only feed the server's failure limiter.
+            raise _Dropped("sasl-refused", f"{command}: the nick needs an account")
+        self._handle_common(msg, writer)
+        return False
 
     # ── SASL PLAIN (embodiment#121 part 2) ─────────────────────────────────
     def _sasl_step(self, msg: IrcLine, writer: asyncio.StreamWriter) -> bool:

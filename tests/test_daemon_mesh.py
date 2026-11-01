@@ -890,7 +890,8 @@ class TestMain:
         try:
             assert "CULTURE_AGENT_SECRET" not in os.environ  # no child can inherit it
             lane = application._mesh
-            assert lane is not None and lane.config.sasl_secret == secret
+            assert lane is not None
+            assert lane.config.sasl_secret == secret
             assert secret not in repr(lane.config)
             assert secret not in json.dumps(application.status(), default=str)
         finally:

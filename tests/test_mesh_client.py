@@ -968,9 +968,13 @@ def test_gauge_releases_on_an_exception_inside():
     gauge = mc.PresenceGauge()
     rec = _Recorder()
     gauge.attach(rec)
-    with pytest.raises(ValueError):
+
+    def failing_completion() -> None:
         with gauge.busy():
             raise ValueError("completion failed")
+
+    with pytest.raises(ValueError):
+        failing_completion()
     assert rec.states[-1] == "idle"
     assert gauge.inflight == 0
 
