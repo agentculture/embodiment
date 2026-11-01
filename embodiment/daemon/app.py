@@ -1411,6 +1411,8 @@ APP_MESH_JUDGE_FAILED = "app-mesh-judge-failed"
 #: A reply claimed an ask on the mesh and no ask was posted that turn (2026-11-01 live
 #: run): the reply is kept and a fixed correction is appended to it.
 APP_MESH_CLAIM_UNBACKED = "app-mesh-claim-unbacked"
+#: A reply carried a line in the daemon's own "[done: ...]" record format: removed.
+APP_ACTION_RECORD_FORGED = "app-action-record-forged"
 #: The operator asked for a mesh question, and neither routed role was ready.
 APP_MESH_ROUTE_UNAVAILABLE = "app-mesh-route-unavailable"
 #: The roles an explicit mesh request is routed to, in order, instead of the default
@@ -4495,6 +4497,14 @@ class DaemonApp:
         # Before the session, the transcript, the bus or the voice see it.
         scrubbed = self._scrub_reply(result.spoken)
         spoken = self._answer_tool_step(scrubbed, before, language="en" if english else "he")
+        # Only the daemon writes "[done: ...]": a model that copied the format has it removed
+        spoken, forged = mesh_tools.strip_action_records(spoken)
+        if forged:
+            self._record(
+                APP_ACTION_RECORD_FORGED,
+                f"{forged} [done: ...] line(s) in a reply were removed",
+                source="mesh",
+            )
         if here is not None:
             _note_actions(here, result.tool_calls)
             spoken = self._mesh_claim_check(here, spoken, english)

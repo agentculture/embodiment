@@ -42,6 +42,7 @@ __all__ = [
     "CLAIM_CORRECTION_HE",
     "claims_mesh_ask",
     "explicit_mesh_request",
+    "strip_action_records",
     "ASK_TOOL",
     "CODES",
     "GUARDED_TOOLS",
@@ -124,11 +125,27 @@ _REQUEST_RE = re.compile(
     re.IGNORECASE,
 )
 _CLAIM_RE = re.compile(
+    # first person ("I sent", "שלחתי") and, as the live run showed both models write it,
+    # the passive ("the question was sent", "השאלה נשלחה")
     r"(?:\bI(?:'ve| have)?\s+(?:just\s+)?(?:asked|sent|posted|forwarded|put)\b"
-    r"|שלחתי|שאלתי|העברתי|פרסמתי)"
+    r"|\b(?:was|is|has been|have been|got)\s+(?:just\s+)?(?:sent|posted|asked|forwarded)\b"
+    r"|שלחתי|שאלתי|העברתי|פרסמתי|נשלחה|נשלח|נשאלה|הועברה|הועבר|פורסמה|פורסם)"
     rf"[^.?!\n]{{0,80}}?{_MESH_WORDS}",
     re.IGNORECASE,
 )
+#: A line in the daemon's own record format ("[done: ...]", see the window). Only the
+#: daemon writes it; a model that copies it into a reply has it removed (live run).
+_RECORD_LINE_RE = re.compile(r"^[ \t]*\[done:[^\]\n]*\][ \t]*\n?", re.MULTILINE)
+
+
+def strip_action_records(text: str) -> tuple[str, int]:
+    """*text* without lines in the daemon's ``[done: ...]`` record format, and how many."""
+    if not isinstance(text, str):
+        return text, 0
+    stripped, count = _RECORD_LINE_RE.subn("", text)
+    return (stripped.rstrip() if count else text), count
+
+
 #: Appended when Gwen claims an ask that was never posted this turn.
 CLAIM_CORRECTION_HE = "תיקון: בפועל לא נשלחה שום שאלה לצ'אט של Culture בתור הזה."
 CLAIM_CORRECTION_EN = "Correction: no question was actually sent to Culture chat in this turn."

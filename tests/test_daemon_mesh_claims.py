@@ -104,9 +104,22 @@ def test_other_words_are_not_a_mesh_request(text: str) -> None:
     assert not mesh_tools.explicit_mesh_request(text)
 
 
+LIVE_CORTEX = "השאלה נשלחה ל־spark-culture בקanal #general. התשובה תגיע עוד מעט."
+LIVE_SENSES = (
+    "השאלה נשלחה ל־spark-colleague בקנאל #general. התשובה תגיע עוד מעט.\n"
+    "[done: asked Culture chat on #general]"
+)
+
+
 @pytest.mark.parametrize(
     "text",
-    [CLAIM_HE, "I asked Culture chat; I will update you.", "I have sent the question to the mesh."],
+    [
+        CLAIM_HE,
+        LIVE_CORTEX,  # the passive both models wrote live (2026-11-01, second run)
+        "I asked Culture chat; I will update you.",
+        "I have sent the question to the mesh.",
+        "Your question was sent to spark-associate on #general.",
+    ],
 )
 def test_a_claimed_ask_is_recognised(text: str) -> None:
     assert mesh_tools.claims_mesh_ask(text)
@@ -265,3 +278,31 @@ class TestRouting:
             h.app.voice_latency.add_sample("worker", 1.2)
         h.app.run_turn(REQUEST)
         assert gateway.chat()[-1]["body"]["model"] == "worker"
+
+
+def test_a_forged_record_line_is_stripped() -> None:
+    text, count = mesh_tools.strip_action_records(LIVE_SENSES)
+    assert count == 1
+    assert "[done:" not in text
+    assert text.startswith("השאלה נשלחה")
+
+
+def test_text_without_a_record_line_is_untouched() -> None:
+    assert mesh_tools.strip_action_records("a [done: x] inline mention") == (
+        "a [done: x] inline mention",
+        0,
+    )
+
+
+def test_the_live_senses_lie_is_stripped_and_corrected(
+    harness: Any, tmp_path: Path, gateway: Gateway
+) -> None:
+    gateway.reply = LIVE_SENSES
+    h = _with_mesh(harness, tmp_path)
+    assert h.app.set_conversation_role("senses") == "senses"  # chosen: not routed
+    answer = h.app.controls().chat(REQUEST)
+    assert "[done:" not in answer["reply"]
+    assert answer["reply"].endswith(mesh_tools.CLAIM_CORRECTION_HE)
+    status = h.app.status()
+    assert status["mesh"]["claims_unbacked"] == 1
+    assert status["degradations"][app_module.APP_ACTION_RECORD_FORGED] == 1
