@@ -1157,3 +1157,22 @@ describe("App — personas and models (gwen-pm t16)", () => {
     expect(chats[0]).toMatchObject({ message: "hi", model: "worker", language: "en" });
   });
 });
+
+describe("App — mesh cards on a typed-only page (t19 live run)", () => {
+  it("an ask and its answer show while the voice transcript is empty, outside the voice section", () => {
+    const source = renderApp(undefined, { drawer: false });
+    const mesh = (seq: number, data: Record<string, unknown>) => ({
+      v: 1, kind: "mesh", ts: "2026-11-01T17:33:41.000Z", seq, source: "app://embodiment",
+      data: { conversation_id: "c1", at: 100 + seq, ...data },
+    });
+    act(() => {
+      source.open();
+      source.emit("mesh", mesh(1, { event: "ask_posted", ask_id: "a1", channel: "#general", text: "To spark-culture: which version?" }));
+      source.emit("mesh", mesh(2, { event: "answer_arrived", ask_id: "a1", nick: "spark-associate", channel: "#general", text: "9.14", rule: "judged" }));
+    });
+    const answer = screen.getByText("Answer from Culture chat");
+    expect(answer.closest(".thread--voice")).toBeNull();
+    expect(answer.closest(".thread--mesh")).not.toBeNull();
+    expect(document.querySelector(".thread--voice .transcript__empty")).not.toBeNull();
+  });
+});

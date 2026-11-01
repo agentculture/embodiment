@@ -685,8 +685,12 @@ export default function App({
                 Transcript
               </h2>
               <Transcript entries={transcriptNow} />
-              <MeshCards events={stream.mesh} conversationId={null} />
             </section>
+            {/* Outside the voice section: CSS hides that section while it has no transcript,
+                which hid every ask and answer card on a typed-only page (t19 live run). */}
+            <div className="thread--mesh">
+              <MeshCards events={stream.mesh} conversationId={null} />
+            </div>
             <Chat
               key={liveKey}
               secret={appliedSecret}

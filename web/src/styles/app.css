@@ -353,6 +353,8 @@ label.icon-btn { cursor: pointer; }
 .thread--voice { inline-size: min(100%, var(--measure)); margin-inline: auto; padding-inline: 1.25rem; }
 .thread.thread--voice { flex: none; padding-block: 0; }
 .thread--voice:has(.transcript__empty) { display: none; }
+.thread--mesh { inline-size: min(100%, var(--measure)); margin-inline: auto; padding-inline: 1.25rem; }
+.thread--mesh:empty, .thread--mesh:not(:has(.mesh)) { display: none; }
 .thread--voice ul, .thread--voice ol { list-style: none; margin: 0; padding: 0; }
 
 /* ---------- chat ---------- */
