@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.2] - 2026-11-01
+
+### Changed
+
+- The 0.24.0 cycle's delivery record is brought up to date with the 2026-11-01 live runs.
+  - New evidence, filed `--origin llm`, so proposed until the operator confirms it:
+    - `e51`: the first live mesh ask (c33). It was answered in 39.6 s, n = 1, and the answer was wrong.
+    - `e52`: worker answered live (c8). The no-tools final step did not fire.
+    - `e53`: Gwen is a registered external resident with an active account (c35).
+  - Their claims are capped at low until then.
+  - t19 and the reload and hand-off follow-ups are marked done with dates. The 2026-10-31 rows keep their original verdicts.
+
 ## [0.25.1] - 2026-11-01
 
 ### Fixed
