@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.0] - 2026-11-01
+
+### Added
+
+- Gwen speaks culture's presence contract (embodiment#121, part 1): after `001` her mesh client sets user mode `+A` and publishes `PRESENCE` (`idle`, `thinking` while any completion through the chat seam is in flight, `draining` on a graceful close), with a 25 s heartbeat while busy. culture now lists `spark-gwen` as a resident (`backend: external`) instead of `offline`. `status.mesh.presence` shows the state, its `since` and the lines sent; a server without PRESENCE (`421`) or the mode (`501`) is recorded once.
+- `/api/models` reports the live conversation's persona and the model and language chosen for it, and the page restores them after a reload instead of resetting the dock to the defaults.
+- The mockup artifact has a "Live reasoning" state (d5).
+
+### Changed
+
+- A typed turn's last step is sent without tools (`turn-final-step-without-tools` when it fires), so a model that calls tools at every step has to answer from what they returned. Found live with worker (Nemotron Bolt, t12/c8). The loop and `max_steps` are unchanged; `tools_withheld()` is a context variable `bind_tools` honours, so the daemon's own wrappers still run on that call.
+- `POST /api/chat` with a `request_id` that runs past the route's clock answers `202 {"state": "pending"}` and counts `chats_handed_off`, instead of recording `http-control-timeout` for a turn that runs on and is kept by its id (d4). Without a `request_id` the timeout is unchanged.
+
 ## [0.24.2] - 2026-10-31
 
 ### Changed

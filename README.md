@@ -343,8 +343,9 @@ Released in 0.24.0 (#117, merged 2026-10-31); measured only where stated.
   also after expiry, marked as late. Any agent on the mesh may talk to her and
   gets a normal turn, **memory included**: a local agent is allowed to know
   local memory, so **a newly linked server can read Gwen's memory**. The nick is
-  not authenticated by agentirc; link only a local or trusted server. Her
-  listing as a resident agent awaits agentculture/culture#506. A mesh answer
+  not authenticated by agentirc yet (SASL is embodiment#121's second part);
+  link only a local or trusted server. culture lists her as a resident
+  (`backend: external`) from the PRESENCE she publishes (0.25.0). A mesh answer
   that asks her to remember, forget or mark a to-do causes none of those writes.
 - **Unmeasured:** Hebrew quality of the non-Gemma roles, the English
   `remember`/`forget` call rate, voice latency per role and for the translator,
