@@ -154,11 +154,11 @@ All filed by `/validate-delivery` (`devague evidence --list`: e1–e27, each `pr
 | Open asks survive a restart and expire visibly (c46) | high | `e35` (2 named tests) |
 | The "was it for me?" judge places answers in context, and the rules are its recorded fallback (`d7`) | medium | `b7` · `e14` · `tests/test_mesh_judge.py`, `tests/test_daemon_mesh.py::TestTheJudge`; tested against a scripted judge only, never live Gemma |
 | A typed answer outlives its request and streams live; recovered after leaving the page (`d4`, `d5`) | medium | `e23`, `e24` · `tests/test_daemon_chat_results.py`, `tests/test_daemon_streaming.py`; live n = 1; lapse `l5` (web tests written after the code) is pending |
-| Per-conversation model choice works for every offered role (c8) | low (pending the operator's confirmation of `e52`) | 2026-10-31: **failed live**, `e26` (worker/Bolt looped on tool calls, no answer). 2026-11-01: worker answered live in 80.5 s, `e52` (proposed, n = 1); the no-tools final step (#122) did not fire, so it is unproven live. `e49` passes for the mechanism |
+| Per-conversation model choice works for every offered role (c8) | low | 2026-10-31: **failed live**, `e26` (worker/Bolt looped on tool calls, no answer). 2026-11-01: worker answered live in 80.5 s, `e52` (confirmed by the operator, n = 1). senses, cortex and worker have now answered live, but `hand` never has; the no-tools final step (#122) did not fire, so it is unproven live. `e49` passes for the mechanism |
 | An agent contacting Gwen shows a card at once (c50) | high | `e48` (a daemon test and `MeshCards > renders an agent-contacted card`) |
 | The UI follows the approved mockup v2 (c17, c34) | medium | `e50` (14 named web tests), `e27`; the live-reasoning panel (`d5`) is not in the mockup |
-| At least one live end-to-end mesh ask answered by another agent (c33) | low (pending the operator's confirmation of `e51`) | `e51` (proposed): 2026-11-01, posted at 17:33:41 UTC, spark-associate answered in 39.6 s (n = 1), matched by the judge. The answer was **wrong**, and the agent addressed never answered. `docs/live-test-results/2026-11-01-mesh-ask-and-presence.md` |
-| Culture registers an external resident (c35) | low (pending the operator's confirmation of `e53`) | `e53` (proposed): 2026-11-01, culture lists `spark-gwen` as external (owner `embodiment-gwen.service`); the account is active and Gwen logs in with SASL (#122, embodiment#121 closed) |
+| At least one live end-to-end mesh ask answered by another agent (c33) | medium | `e51` (confirmed by the operator): 2026-11-01, posted at 17:33:41 UTC, spark-associate answered in 39.6 s (n = 1), matched by the judge. The answer was **wrong**, and the agent addressed never answered. `docs/live-test-results/2026-11-01-mesh-ask-and-presence.md` |
+| Culture registers an external resident (c35) | medium | `e53` (confirmed by the operator; the login is inferred, because agentirc logs no successful login): 2026-11-01, culture lists `spark-gwen` as external (owner `embodiment-gwen.service`); the account is active and Gwen logs in with SASL (#122, embodiment#121 closed) |
 
 Lapse ledger evidence:
 
@@ -168,7 +168,7 @@ gate misses that were caught and fixed before merge.
 
 ## Update, 2026-11-01
 
-This cycle's open items were finished on 2026-11-01. The run above stays recorded as it was on 2026-10-31. The new evidence is `e51`–`e53`, filed `--origin llm` and so **proposed** until the operator confirms it. The claims they back are capped at low until then.
+This cycle's open items were finished on 2026-11-01. The run above stays recorded as it was on 2026-10-31. The new evidence is `e51`–`e53`, filed `--origin llm`. The operator confirmed all three on 2026-11-01. c33 and c35 are now medium, n = 1 each. c8 stays low: `hand` has never answered live, and the no-tools final step is unproven.
 
 - **t19 / c33:** the first live mesh ask. Gwen posted, spark-associate answered in 39.6 s, and the judge matched it. Results are in `docs/live-test-results/2026-11-01-mesh-ask-and-presence.md`. The same run found three bugs:
   - the answer card was hidden on a typed-only page;
@@ -185,7 +185,7 @@ This cycle's open items were finished on 2026-11-01. The run above stays recorde
 - ~~`t19`: run one live mesh ask answered by another agent and record its latency (c33), and publish the live acceptance~~ **Done 2026-11-01** (`e51`, results published).
 - `t12` / c8: worker answered live once (`e52`). Still open: observe the no-tools final step rescuing a turn that would otherwise loop.
 - ~~c35: agentculture/culture#506~~ **Done 2026-11-01:** Gwen is a registered external resident, and her account is active (`e53`).
-- The operator confirms or rejects `e51`–`e53`.
+- ~~The operator confirms or rejects `e51`–`e53`~~ **Confirmed 2026-11-01.**
 - #118 — voice latency through the translator; fix only if it proves slow in use.
 - `d5` follow-up: a reasoning summary (deferred by the operator). ~~The chat POST should return at once when a `request_id` is present~~ **Done in #122** as a 202 hand-off at the route's clock.
 - ~~The dock's persona and model reset after a page reload~~ **Done in #122.**
