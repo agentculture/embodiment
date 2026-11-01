@@ -39,7 +39,6 @@ from embodiment.turn import (
     DEGRADED_TRUNCATION_UNDETECTABLE,
     DEGRADED_UNSPEAKABLE_COMPLETION,
     FALLBACK_TEXT,
-    FINAL_STEP_PROMPT,
     SYSTEM_PROMPT,
     TurnConfig,
     TurnResult,
@@ -1134,8 +1133,8 @@ class TestTheFinalStepHasNoTools:
         assert result.exit_reason != EXIT_BUDGET
         assert len(seen) == 4  # the budget is unchanged: no extra call
         assert [bool(call["tools"]) for call in seen] == [True, True, True, False]
-        assert seen[-1]["last"] == {"role": "user", "content": FINAL_STEP_PROMPT}
-        assert all(call["last"].get("content") != FINAL_STEP_PROMPT for call in seen[:-1])
+        # nothing is appended: the last call sees the transcript, the tool results last
+        assert seen[-1]["last"]["role"] == "tool"
         assert result.tool_calls == ("clock",) * 3
 
     def test_the_withheld_step_is_recorded(self) -> None:

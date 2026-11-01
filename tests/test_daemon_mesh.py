@@ -204,6 +204,23 @@ class TestPresence:
         wait_for(lambda: _presence_states(ircd) == ["idle"])
 
 
+def test_the_session_summary_holds_thinking_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    gauge = app_module.PresenceGauge()
+    seen: list[int] = []
+
+    def fake_complete(messages: Any, **kwargs: Any) -> ModelResponse:
+        seen.append(gauge.inflight)
+        return ModelResponse(content="summary")
+
+    monkeypatch.setattr(app_module, "http_complete", fake_complete)
+    summarise = app_module.gateway_summariser(
+        app_module.AppConfig(gateway_url="http://g.invalid"), presence=gauge
+    )
+    assert summarise([{"role": "user", "content": "q"}]) == "summary"
+    assert seen == [1]
+    assert gauge.inflight == 0
+
+
 def test_the_gateway_seam_holds_thinking_for_the_completion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

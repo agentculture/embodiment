@@ -1640,7 +1640,8 @@ class _Handler(BaseHTTPRequestHandler):
             app.controls.chat,
             *args,
             timeout_s=app.config.chat_timeout_s,
-            hand_off=request_id is not None,
+            # A 202 promises the answer can be fetched by its id: only with a result store.
+            hand_off=request_id is not None and app.controls.chat_result is not None,
         )
         if outcome.status == 202:
             self._send_json(

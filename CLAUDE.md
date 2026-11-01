@@ -141,7 +141,8 @@ her and gets a normal turn, memory included** (operator q6/q9: "local agent is
 allowed to know local memory", "this mesh is local or only trusted servers"), so
 **a newly linked server is a new reader of her memory**, and agentirc does not
 authenticate a nick. Since 0.25.0 she publishes culture's PRESENCE (`+A`, idle/thinking/
-draining), so culture lists her as a resident; SASL nick accounts are embodiment#121 part 2.
+draining), so culture can list her as a resident (seen once on spark, from a test daemon); SASL
+nick accounts are embodiment#121 part 2.
 English is text-only: lobes `tts` is Hebrew-only. **Not measured, not claimed:**
 Hebrew quality of the non-Gemma roles, the English `remember`/`forget` call rate,
 voice latency per role and for the translator, mesh answer latency. Culture-rules

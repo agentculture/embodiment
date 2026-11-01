@@ -2231,7 +2231,9 @@ def gateway_seam(
     return seam
 
 
-def gateway_summariser(config: "AppConfig") -> Callable[[list[dict[str, Any]]], str]:
+def gateway_summariser(
+    config: "AppConfig", presence: Optional[PresenceGauge] = None
+) -> Callable[[list[dict[str, Any]]], str]:
     """The end-of-session summary seam: one call on the CONFIGURED role, its own prompt.
 
     Wired because it was the missing half of the memory lane — ``Session.close``
@@ -2243,14 +2245,15 @@ def gateway_summariser(config: "AppConfig") -> Callable[[list[dict[str, Any]]], 
     """
 
     def summarise(messages: list[dict[str, Any]]) -> str:
-        reply = http_complete(
-            [{"role": "system", "content": SUMMARY_PROMPT}, *messages],
-            gateway_url=config.gateway_url,
-            api_key=config.api_key,
-            role=config.role,
-            max_tokens=SUMMARY_MAX_TOKENS,
-            deadline=config.session_summary_deadline,
-        )
+        with presence.busy() if presence is not None else contextlib.nullcontext():
+            reply = http_complete(
+                [{"role": "system", "content": SUMMARY_PROMPT}, *messages],
+                gateway_url=config.gateway_url,
+                api_key=config.api_key,
+                role=config.role,
+                max_tokens=SUMMARY_MAX_TOKENS,
+                deadline=config.session_summary_deadline,
+            )
         return reply.content
 
     return summarise
@@ -5649,11 +5652,10 @@ class DaemonApp:
         key = self._persona_key(None, session) if session is not None else None
         with self._lock:
             role = self._conversation_roles.get(key) if key is not None else None
-            language = self._conversation_languages.get(key) if key is not None else None
         return {
             "persona": self._session_persona_id(session),
-            "model": role,
-            "language": language,
+            "model": role,  # the CHOSEN role only: _session_role falls back to the persona's
+            "language": self._session_language(session),
         }
 
     def _control_conversation_settings(
@@ -10433,7 +10435,7 @@ def main() -> DaemonApp:
 
     holder = RoleHolder(config.role, config.completion_deadline)
     seam = gateway_seam(config, holder, presence=mesh.presence)
-    summarise = gateway_summariser(config)
+    summarise = gateway_summariser(config, presence=mesh.presence)
     # The chat roles the gateway serves, polled from start (t2, t12). Its failures
     # are recorded ONCE per code: a dead gateway is a degradation, never a raise,
     # and a poll a minute must not grow the ledger by one record a minute.

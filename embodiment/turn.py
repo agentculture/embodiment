@@ -221,11 +221,9 @@ DEGRADED_PERCEPTION = "turn-perception-degraded"
 #: model had to answer from what the tools returned (t12/c8: Nemotron Bolt looped).
 DEGRADED_FINAL_WITHOUT_TOOLS = "turn-final-step-without-tools"
 
-#: Appended (to that one call only) when the last step is sent without tools.
-FINAL_STEP_PROMPT = (
-    "You have used every tool step of this turn. Answer now, from what the tools "
-    "returned; no more tools are available."
-)
+#: Nothing is appended to that last call: the conversation's own language holds (an
+#: English nudge pushed a Hebrew turn towards English, which the Hebrew-only voice
+#: cannot speak; review of the 0.25.0 branch). Withholding the tools is the whole change.
 
 #: Cap on one degradation's reason text, as every sibling lane caps its own.
 _MAX_REASON_LEN = 500
@@ -370,9 +368,7 @@ class _Recorder:
         if self.final_step and len(self.responses) + 1 == self.final_step:
             self.final_used = True
             with tools_withheld():
-                response = self.complete(
-                    [*messages, {"role": "user", "content": FINAL_STEP_PROMPT}]
-                )
+                response = self.complete(messages)
         else:
             response = self.complete(messages)
         self.responses.append(response)

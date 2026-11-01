@@ -910,3 +910,61 @@ def test_presence_reader_counts_lines_sent(ircd, started):
     client = started(make_config(ircd))
     wait_for(lambda: client.presence()["sent"] == 1)
     assert client.presence()["state"] == "idle"
+
+
+def test_queued_presence_lines_are_not_dropped_sends():
+    queue: asyncio.Queue[str] = asyncio.Queue()
+    for line in ("PRESENCE :{}", "PRIVMSG #general :hi", "THREAD CREATE #g t :x", "PRESENCE :{}"):
+        queue.put_nowait(line)
+    assert mc._unsent_messages(queue) == 2
+    assert queue.empty()
+
+
+def test_after_a_421_the_connection_publishes_no_more_presence(ircd, started):
+    client = started(make_config(ircd, presence_heartbeat=0.05))
+    wait_for(lambda: client.state == "registered" and ircd.sent("PRESENCE "))
+    ircd.push(":spark 421 spark-gwen PRESENCE :Unknown command")
+    wait_for(lambda: any(d.code == "mesh-presence-unsupported" for d in client.degradations))
+    before = len(ircd.sent("PRESENCE "))
+    client.set_presence("thinking")
+    time.sleep(0.3)
+    assert len(ircd.sent("PRESENCE ")) == before
+    client.close(2.0)
+    wait_for(lambda: ircd.sent("QUIT"))
+    assert len(ircd.sent("PRESENCE ")) == before  # no draining either
+
+
+def test_gauge_tells_the_client_while_holding_its_lock():
+    gauge = mc.PresenceGauge()
+    held: list[bool] = []
+
+    class Client:
+        def set_presence(self, state: str) -> bool:
+            held.append(gauge._lock.locked())
+            return True
+
+    gauge.attach(Client())
+    with gauge.busy():
+        pass
+    assert held == [True, True, True]
+
+
+def test_gauge_edges_from_many_threads_end_on_the_true_state():
+    gauge = mc.PresenceGauge()
+    rec = _Recorder()
+    gauge.attach(rec)
+
+    def work() -> None:
+        for _ in range(200):
+            with gauge.busy():
+                pass
+
+    threads = [threading.Thread(target=work) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert gauge.inflight == 0
+    assert rec.states[-1] == "idle"
+    # strictly alternating: every edge was told in the order it happened
+    assert all(a != b for a, b in zip(rec.states[1:], rec.states[2:]))

@@ -52,7 +52,8 @@ The wire, as agentirc answers it (read from ``agentirc/client.py`` and
   daemon's chat seam is in flight and ``idle`` otherwise; a graceful close sends
   ``draining`` before ``QUIT``. ``offline`` is the server's to set. A server that
   answers ``421`` to ``PRESENCE`` or ``501`` to the mode is recorded once
-  (``mesh-presence-unsupported`` / ``mesh-mode-refused``) and the client goes on.
+  (``mesh-presence-unsupported`` / ``mesh-mode-refused``); after a ``421`` that
+  connection publishes no more PRESENCE, and the client goes on.
 
 Clocks, each derived from what it bounds:
 
@@ -154,6 +155,16 @@ _TERMINAL = frozenset({"nick-taken", "nick-refused", "stopped"})
 PRESENCE_STATES = ("idle", "listening", "thinking", "working", "draining", "offline")
 #: The states agentirc flags ``presumed_hung`` when their heartbeat stops.
 PRESENCE_BUSY = frozenset({"listening", "thinking", "working", "draining"})
+
+
+def _unsent_messages(outbox: "asyncio.Queue[str]") -> int:
+    """Empty *outbox*; the message lines in it (PRIVMSG/THREAD). A queued PRESENCE line
+    is not a lost message, so it is not a dropped send."""
+    left = 0
+    while not outbox.empty():
+        if outbox.get_nowait().startswith(("PRIVMSG", "THREAD")):
+            left += 1
+    return left
 
 
 def _utc_now() -> str:
@@ -441,6 +452,8 @@ class MeshClient:
         }
         self._presence = ("idle", _utc_now())
         self._presence_wake: Optional[asyncio.Event] = None
+        #: Set by a ``421 PRESENCE``; reset on each new connection.
+        self._presence_unsupported = False
         self._joined: set[str] = set()
         self._server_name = ""
         self._who_done: dict[str, frozenset[str]] = {}
@@ -638,7 +651,8 @@ class MeshClient:
             except TimeoutError:
                 pass
             wake.clear()
-            outbox.put_nowait(self._presence_line())
+            if not self._presence_unsupported:
+                outbox.put_nowait(self._presence_line())
 
     # ── send (any thread) ──────────────────────────────────────────────────
     def send(self, target: str, text: str) -> bool:
@@ -836,6 +850,7 @@ class MeshClient:
         self._outbox = outbox
         wake = asyncio.Event()
         self._presence_wake = wake  # before the first line, so no change falls between
+        self._presence_unsupported = False
         writer.write(f"MODE {self._config.nick} +A\r\n".encode())
         writer.write((self._presence_line() + "\r\n").encode("utf-8"))
         self._count("presence_sent")
@@ -854,7 +869,7 @@ class MeshClient:
             except _QUIET_ENDINGS:
                 pass
             self._outbox = None
-            left = outbox.qsize()
+            left = _unsent_messages(outbox)
             if left:
                 self._count("dropped_sends", left)
             pump.cancel()
@@ -938,6 +953,7 @@ class MeshClient:
 
     def _on_unknown_command(self, msg: IrcLine) -> None:
         if msg.params[1].upper() == "PRESENCE":
+            self._presence_unsupported = True  # this connection publishes no more
             self._record("mesh-presence-unsupported", "421 PRESENCE", streak=True)
 
     def _on_cap(self, msg: IrcLine) -> None:
@@ -1032,7 +1048,8 @@ class MeshClient:
             if quit_first:
                 with self._lock:
                     self._presence = ("draining", _utc_now())
-                writer.write((self._presence_line() + "\r\n").encode("utf-8"))
+                if not self._presence_unsupported:
+                    writer.write((self._presence_line() + "\r\n").encode("utf-8"))
                 writer.write(b"QUIT :Gwen is leaving\r\n")
                 await asyncio.wait_for(writer.drain(), timeout=max(0.01, budget / 2))
         except OSError:  # TimeoutError and ConnectionError are OSErrors
@@ -1068,9 +1085,8 @@ class PresenceGauge:
         """Report to *client* (``None`` detaches); it is told the current state now."""
         with self._lock:
             self._client = client
-            state = "thinking" if self._inflight else "idle"
-        if client is not None:
-            client.set_presence(state)
+            if client is not None:
+                self._tell(client, "thinking" if self._inflight else "idle")
 
     @property
     def inflight(self) -> int:
@@ -1086,14 +1102,20 @@ class PresenceGauge:
             self._step(-1)
 
     def _step(self, by: int) -> None:
+        # The edge is published UNDER the lock: two threads crossing it (the last call
+        # ending, the judge starting) are told to the client in the order they happened,
+        # so the row can never read idle while a call is in flight (review of 0.25.0).
         with self._lock:
             before = self._inflight
             self._inflight = max(0, before + by)
             edge = (before == 0) != (self._inflight == 0)
-            client, state = self._client, ("thinking" if self._inflight else "idle")
-        if edge and client is not None:
-            try:
-                client.set_presence(state)
-            except Exception:  # noqa: BLE001  # presence must never fail a completion
-                with self._lock:
-                    self.failures += 1
+            if edge and self._client is not None:
+                self._tell(self._client, "thinking" if self._inflight else "idle")
+
+    def _tell(self, client: Any, state: str) -> None:
+        """Hand *client* the state; caller holds the lock. ``set_presence`` only takes the
+        client's own lock and never calls back here, so the nesting cannot deadlock."""
+        try:
+            client.set_presence(state)
+        except Exception:  # noqa: BLE001  # presence must never fail a completion
+            self.failures += 1
