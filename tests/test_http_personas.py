@@ -360,6 +360,24 @@ class TestAgainstTheDaemon:
         assert h.app.conversation_role() == "worker"
         assert h.app.conversation_language() == "he"
 
+    def test_models_report_the_live_conversations_choices_for_a_reload(self, live: Any) -> None:
+        h, built = live
+        fresh = _send(built, "GET", "/api/models")[1]["conversation"]
+        assert fresh == {"persona": BUILTIN_ID, "model": None, "language": None}
+        _send(built, "POST", "/api/personas", PERSONA)
+        good = {"message": "hi", "persona": "ada", "model": "worker", "language": "en"}
+        assert _send(built, "POST", "/api/chat", good)[0] == 200
+        chosen = _send(built, "GET", "/api/models")[1]["conversation"]
+        assert chosen == {"persona": "ada", "model": "worker", "language": "en"}
+
+    def test_a_persona_alone_reports_no_chosen_model(self, live: Any) -> None:
+        _, built = live
+        _send(built, "POST", "/api/personas", PERSONA)
+        assert _send(built, "POST", "/api/chat", {"message": "hi", "persona": "ada"})[0] == 200
+        choice = _send(built, "GET", "/api/models")[1]["conversation"]
+        assert choice["persona"] == "ada"
+        assert choice["model"] is None  # the persona's own default role applies
+
     def test_a_setting_for_an_unknown_conversation_is_a_404(self, live: Any) -> None:
         _, built = live
         status, body = _send(

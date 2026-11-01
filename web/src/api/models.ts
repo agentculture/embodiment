@@ -23,6 +23,8 @@ export interface ModelsInfo {
   stale: boolean;
   ageS: number | null;
   conversationRole: string;
+  /** The live conversation's persona and what was CHOSEN for it (a reload restores these). */
+  live: ConversationSettings;
 }
 
 export type ModelsOutcome =
@@ -86,6 +88,18 @@ function parseRoles(raw: unknown[]): ModelRole[] {
   return out;
 }
 
+const LANGS: readonly string[] = ["he", "en", "none"];
+
+/** `conversation` of GET /api/models -> the settings to restore; a null field stays unset. */
+export function parseLiveChoice(raw: unknown): ConversationSettings {
+  if (!isObj(raw)) return {};
+  const out: ConversationSettings = {};
+  if (typeof raw.persona === "string" && raw.persona) out.persona = raw.persona;
+  if (typeof raw.model === "string" && raw.model) out.model = raw.model;
+  if (typeof raw.language === "string" && LANGS.includes(raw.language)) out.language = raw.language as Language;
+  return out;
+}
+
 function errorCode(body: unknown): string {
   if (!isObj(body)) return "unparseable-response";
   if (typeof body.code === "string") return body.code;
@@ -120,6 +134,7 @@ export async function fetchModels(secret: string, options: ModelsClientOptions =
       stale: body.stale === true,
       ageS: typeof body.age_s === "number" && Number.isFinite(body.age_s) ? body.age_s : null,
       conversationRole: str(body.conversation_role),
+      live: parseLiveChoice(body.conversation),
     },
   };
 }

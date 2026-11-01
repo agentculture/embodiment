@@ -18,7 +18,7 @@ const models: ModelsInfo = {
     { role: "worker", model: "Bolt", ready: true, host: "spark", voice: "unmeasured", voiceP90S: null },
     { role: "muse", model: "G31", ready: false, host: "spark2", voice: "unmeasured", voiceP90S: null },
   ],
-  stale: false, ageS: 14, conversationRole: "senses",
+  stale: false, ageS: 14, conversationRole: "senses", live: {},
 };
 
 function setup(over: Partial<React.ComponentProps<typeof DockMeta>> = {}) {

@@ -1130,4 +1130,30 @@ describe("App — personas and models (gwen-pm t16)", () => {
     expect(await screen.findByRole("heading", { name: "Personas", level: 1 })).toBeInTheDocument();
     expect(await screen.findByRole("navigation", { name: "Personas" })).toBeInTheDocument();
   });
+
+  it("a reload restores the live conversation's chosen model and language", async () => {
+    window.location.hash = ""; // the test before leaves the Personas tab open
+    const chats: Record<string, unknown>[] = [];
+    const live = { ...modelsBody, conversation: { persona: "gwen", model: "worker", language: "en" } };
+    globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.endsWith("/api/personas")) return new Response(JSON.stringify(personasBody), { status: 200 });
+      if (u.endsWith("/api/models")) return new Response(JSON.stringify(live), { status: 200 });
+      if (u.endsWith("/api/chat")) {
+        chats.push(JSON.parse(String(init?.body)));
+        return new Response(JSON.stringify({ reply: "answer", sources: [], turn_serial: 1 }), { status: 200 });
+      }
+      if (u.endsWith("/api/conversations")) return new Response(JSON.stringify({ conversations: [] }), { status: 200 });
+      return new Response(JSON.stringify({ error: { code: "not-found" } }), { status: 404 });
+    }) as typeof fetch;
+    const source = renderApp(undefined, { drawer: false });
+    act(() => source.open());
+    expect(await screen.findByRole("button", { name: /Model\s+worker/ })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("message"), { target: { value: "hi" } });
+    await act(async () => {
+      fireEvent.submit(screen.getByRole("form", { name: "composer" }));
+    });
+    expect(await screen.findByText("answer")).toBeInTheDocument();
+    expect(chats[0]).toMatchObject({ message: "hi", model: "worker", language: "en" });
+  });
 });

@@ -123,6 +123,8 @@ export async function sendChat(
     body = undefined;
   }
   const obj = body && typeof body === "object" ? (body as Record<string, unknown>) : null;
+  // A named request that ran past the route's clock: the turn runs on, kept by its id (d4).
+  if (response.status === 202 && obj?.state === "pending") return { ok: false, code: CHAT_PENDING_CODE };
   if (!response.ok) {
     const err = obj && typeof obj.error === "object" && obj.error ? (obj.error as Record<string, unknown>) : null;
     const code =
@@ -152,6 +154,8 @@ function parseReply(result: Record<string, unknown> | null): ChatReply | null {
 
 /** The code the daemon answers when the chat route's own clock ran out; the turn runs on. */
 export const CHAT_TIMEOUT_CODE = "http-control-timeout";
+/** A named request answered 202: still running, kept by its request id (no degradation). */
+export const CHAT_PENDING_CODE = "chat-pending";
 
 /** A fresh request id: a token the daemon accepts (8-64 of letters, digits, _ or -). */
 export function newRequestId(): string {

@@ -204,11 +204,19 @@ export default function App({
       live = false;
     };
   }, [appliedSecret, personasKey]);
+  // A reload restores what the live conversation runs under, once per secret: the first
+  // models answer seeds the dock unless the operator has already picked something.
+  const seeded = useRef<string | null>(null);
   useEffect(() => {
     let live = true;
     const load = () =>
       void fetchModels(appliedSecret).then((out) => {
-        if (live && out.ok) setModels(out.info);
+        if (!live || !out.ok) return;
+        setModels(out.info);
+        if (seeded.current !== appliedSecret) {
+          seeded.current = appliedSecret;
+          setSettings((cur) => (Object.keys(cur).length ? cur : out.info.live));
+        }
       });
     load();
     const t = setInterval(load, 60_000);

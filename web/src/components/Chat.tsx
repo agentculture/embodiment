@@ -8,6 +8,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { EventEnvelope } from "../api/events";
 import {
   CHAT_TIMEOUT_CODE,
+  CHAT_PENDING_CODE,
   fetchChatResult,
   formatMmSs,
   newRequestId,
@@ -538,7 +539,7 @@ export function Chat({
     setActiveId(requestId);
     addPending({ id: requestId, question: text, conversation: conversation ?? null, at: Date.now() });
     const outcome = await sendChat(text, secret, clientOptions, conversation, settings, requestId);
-    if (!outcome.ok && outcome.code === CHAT_TIMEOUT_CODE) {
+    if (!outcome.ok && (outcome.code === CHAT_PENDING_CODE || outcome.code === CHAT_TIMEOUT_CODE)) {
       // The turn runs on past the route's clock: wait for its answer, never call it failed.
       setDegraded(null);
       setMessages((m) => [...m, { key: `w-${requestId}`, role: "assistant", text: "", sources: [], waiting: requestId }]);

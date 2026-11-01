@@ -5637,6 +5637,23 @@ class DaemonApp:
             "stale": models["stale"],
             "age_s": models["age_s"],
             "conversation_role": self.conversation_role(),
+            "conversation": self._live_choices(),
+        }
+
+    def _live_choices(self) -> dict[str, Any]:
+        """The live conversation's persona, and the model and language CHOSEN for it
+        (``None`` where none was: the persona's own applies), so a reloaded page shows
+        what the next turn will use rather than the defaults."""
+        with self._lock:
+            session = self._session
+        key = self._persona_key(None, session) if session is not None else None
+        with self._lock:
+            role = self._conversation_roles.get(key) if key is not None else None
+            language = self._conversation_languages.get(key) if key is not None else None
+        return {
+            "persona": self._session_persona_id(session),
+            "model": role,
+            "language": language,
         }
 
     def _control_conversation_settings(

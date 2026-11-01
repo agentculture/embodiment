@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { fetchModels, settingsBody, voiceLabel } from "./models";
+import { fetchModels, parseLiveChoice, settingsBody, voiceLabel } from "./models";
 
 const res = (status: number, body: unknown) =>
   vi.fn(async (_u: RequestInfo | URL, _i?: RequestInit) =>
@@ -45,6 +45,15 @@ describe("api/models", () => {
     expect(voiceLabel(base)).toBe("voice speed unmeasured");
     expect(voiceLabel({ ...base, voice: "probing" })).toBe("voice speed being measured");
     expect(voiceLabel({ ...base, voice: "measured", voiceP90S: 1.234 })).toBe("voice p90 1.2 s");
+  });
+
+  it("parseLiveChoice keeps only what was chosen and valid", () => {
+    expect(parseLiveChoice(undefined)).toEqual({});
+    expect(parseLiveChoice({ persona: "ada", model: null, language: null })).toEqual({ persona: "ada" });
+    expect(parseLiveChoice({ persona: "gwen", model: "worker", language: "en" })).toEqual({
+      persona: "gwen", model: "worker", language: "en",
+    });
+    expect(parseLiveChoice({ persona: "", model: 3, language: "fr" })).toEqual({});
   });
 
   it("settingsBody carries only what was chosen", () => {

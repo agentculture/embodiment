@@ -39,6 +39,19 @@ describe("an answer that outlives its request", () => {
     expect(loadPending()).toEqual([]);
   });
 
+  it("a 202 hand-off waits the same way, with no degradation shown", async () => {
+    const fetchFn = server(
+      { status: 202, body: { ok: true, state: "pending", request_id: "x" } },
+      [PENDING, done("Handed off, then answered.")],
+    );
+    render(<Chat secret="k" clientOptions={{ fetchFn }} pollMs={10} />);
+    await send("long question");
+    expect(await screen.findByText(/Still working on this/)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(await screen.findByText(/Handed off, then answered/)).toBeInTheDocument();
+    expect(loadPending()).toEqual([]);
+  });
+
   it("recovers a question asked before the page was left", async () => {
     addPending({ id: "req-left000000", question: "asked before leaving", conversation: null, at: Date.now() });
     const fetchFn = server({ status: 200, body: {} }, [done("Here it is.")]);
