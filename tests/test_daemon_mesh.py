@@ -207,6 +207,23 @@ class TestPresence:
         wait_for(lambda: h.app.status()["mesh"]["sasl"] == "authenticated")
         assert secret not in json.dumps(h.app.status(), default=str)
 
+    def test_a_whole_typed_turn_holds_thinking_across_its_tool_steps(
+        self, harness: Any, ircd: FakeIrcd, tmp_path: Path
+    ) -> None:
+        gauge = app_module.PresenceGauge()
+        h = _wired(
+            harness,
+            _lane(tmp_path, make_config(ircd), presence=gauge),
+            _call("remember", fact="the kettle is descaled"),
+        )
+        h.app.start()
+        _registered(h)
+        assert h.app.controls().chat(TYPED)["ok"] is True
+        assert gauge.inflight == 0
+        states = _presence_states(ircd)
+        # one thinking for the whole turn (the remember step between completions included)
+        assert states.count("thinking") == 1
+
     def test_a_lane_without_a_gauge_still_publishes_idle(
         self, harness: Any, ircd: FakeIrcd, tmp_path: Path
     ) -> None:
@@ -252,6 +269,32 @@ def test_the_gateway_seam_holds_thinking_for_the_completion(
     assert seam([{"role": "user", "content": "q"}]).content == "ok"
     assert seen == [1]
     assert gauge.inflight == 0
+
+
+def test_a_real_ask_keeps_its_claim_and_records_the_deed(
+    harness: Any, ircd: FakeIrcd, tmp_path: Path
+) -> None:
+    claim = "שלחתי את השאלה לצ'אט של Culture. אעדכן אותך כשתגיע תשובה."
+    h = _wired(
+        harness,
+        _lane(tmp_path, make_config(ircd)),
+        _call("ask_culture", question=QUESTION),
+        ModelResponse(content=claim),
+    )
+    h.app.start()
+    _registered(h)
+    answer = h.app.controls().chat(TYPED)
+    assert answer["reply"] == claim  # true: no correction
+    assert h.app.status()["mesh"]["claims_unbacked"] == 0
+    rows = [r for r in _user_rows_all(h) if r.get("role") == "assistant"]
+    assert rows[-1]["actions"] == ["asked Culture chat on #general"]
+
+
+def _user_rows_all(h: Any) -> list[dict[str, Any]]:
+    rows = []
+    for path in sorted((Path(h.app._state.dir) / SESSIONS_DIRNAME).glob("*.jsonl")):
+        rows.extend(json.loads(line) for line in path.read_text(encoding="utf-8").splitlines())
+    return rows
 
 
 # ── criterion 1: the resident, ask_culture on every turn, agent turns ──────────

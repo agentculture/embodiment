@@ -234,7 +234,13 @@ from embodiment.personas import (
 )
 from embodiment.realtime import wire
 from embodiment.realtime.client import RealtimeConfig, RealtimeEars
-from embodiment.session import ASK_RECORD_TYPE, PERSONA_FIELD, Session, default_ask_detector
+from embodiment.session import (
+    ACTIONS_FIELD,
+    ASK_RECORD_TYPE,
+    PERSONA_FIELD,
+    Session,
+    default_ask_detector,
+)
 from embodiment.tools import BOUND_REGISTRY_ATTR, ToolRegistry, ToolSpec, bind_tools
 from embodiment.translate import (
     OriginalText,
@@ -1402,6 +1408,18 @@ APP_MESH_INBOX_FULL = "app-mesh-inbox-full"
 #: The "was it for me?" judge could not be asked or its reply not read (review of #117,
 #: finding 3): the deterministic rules decided that message instead.
 APP_MESH_JUDGE_FAILED = "app-mesh-judge-failed"
+#: A reply claimed an ask on the mesh and no ask was posted that turn (2026-11-01 live
+#: run): the reply is kept and a fixed correction is appended to it.
+APP_MESH_CLAIM_UNBACKED = "app-mesh-claim-unbacked"
+#: The operator asked for a mesh question, and neither routed role was ready.
+APP_MESH_ROUTE_UNAVAILABLE = "app-mesh-route-unavailable"
+#: The roles an explicit mesh request is routed to, in order, instead of the default
+#: speaker (operator, 2026-11-01: "don't trust senses - try cortex if not bolt").
+MESH_ROUTE_ROLES = ("cortex", "worker")
+#: An assistant record's routing reason, beside chat_role.
+CHAT_ROUTED_FIELD = "chat_routed"
+#: The window line naming what an assistant turn actually did (its action labels).
+WINDOW_ACTIONS_PREFIX = "  [done: "
 #: The role the judge runs as: the local speaker, the smallest model always loaded.
 MESH_JUDGE_ROLE = "senses"
 #: Gwen's reply to an agent was not accepted for sending, or the agent turn gave none.
@@ -2722,6 +2740,9 @@ class _VoiceTurn:
     #: completion actually used them; unused ones go back (review of #117).
     mesh_taken: list[dict[str, Any]] = field(default_factory=list)
     mesh_consumed: bool = False
+    #: Channels this turn posted an ask to, and what it did (ACTIONS_FIELD labels).
+    mesh_posts: list[str] = field(default_factory=list)
+    actions: list[str] = field(default_factory=list)
     mesh_inbound: Optional["_MeshInbound"] = None
 
 
@@ -2784,6 +2805,9 @@ class _TextTurn:
     #: completion actually used them; unused ones go back (review of #117).
     mesh_taken: list[dict[str, Any]] = field(default_factory=list)
     mesh_consumed: bool = False
+    #: Channels this turn posted an ask to, and what it did (ACTIONS_FIELD labels).
+    mesh_posts: list[str] = field(default_factory=list)
+    actions: list[str] = field(default_factory=list)
     mesh_inbound: Optional[_MeshInbound] = None
     prompt_query: str = ""
 
@@ -2823,13 +2847,18 @@ class _ChatTarget:
     host: Optional[str] = None
     #: A spoken turn's voice-latency state when it gates the role; ``None`` when not.
     gate: Optional[str] = None
+    #: Why the role is not the conversation's own (``"mesh-request"``), or ``None``.
+    routed: Optional[str] = None
 
     def trace(self) -> dict[str, Any]:
-        return {
+        trace = {
             CHAT_ROLE_FIELD: self.role,
             CHAT_MODEL_FIELD: self.model,
             CHAT_HOST_FIELD: self.host,
         }
+        if self.routed:
+            trace[CHAT_ROUTED_FIELD] = self.routed
+        return trace
 
 
 def _previous_page_sources(
@@ -3210,6 +3239,8 @@ class DaemonApp:
             "nick_retries": 0,
             "guarded_writes": 0,
             "notices_skipped_voice_off": 0,
+            "claims_unbacked": 0,
+            "routed_turns": 0,
         }
         self._mesh_refusals: dict[str, int] = {}
         #: The channels' recent lines and the judge's call budget (review of #117, 3).
@@ -4284,8 +4315,15 @@ class DaemonApp:
         the reply. ``self._conversation`` keeps a typed turn from interleaving
         with this one's session writes.
         """
-        with self._conversation:
+        with self._conversation, self._presence_busy():
             return self._run_voice_turn(text, serial, timing)
+
+    def _presence_busy(self) -> Any:
+        """Hold Gwen's mesh row at ``thinking`` for a whole turn (review #2 of #122): her
+        tools run between model steps, and per-completion gauging read ``idle`` there."""
+        lane = self._mesh
+        gauge = lane.presence if lane is not None else None
+        return gauge.busy() if gauge is not None else contextlib.nullcontext()
 
     def _run_voice_turn(self, text: str, serial: int, timing: TurnTiming) -> TurnResult:
         self._publish("turn", {"phase": "heard", "step_count": 0})
@@ -4308,7 +4346,7 @@ class DaemonApp:
             clock=self._clock_line(),
             persona_id=persona_id,
             persona=persona,
-            target=self._turn_target(session, spoken=True),
+            target=self._turn_target(session, spoken=True, query=spoken_in),
         )
         self._mesh_begin(turn, str(getattr(session, "session_id", "") or ""), None)
         with self._lock:
@@ -4357,6 +4395,7 @@ class DaemonApp:
                         PERSONA_FIELD: turn.persona_id,
                         **self._language_trace(turn.persona_id, turn.persona),
                         **_target_trace(turn.target, turn.translation),
+                        **_actions_trace(turn),
                     },
                 ),
                 APP_TURN_FAILED,
@@ -4456,6 +4495,9 @@ class DaemonApp:
         # Before the session, the transcript, the bus or the voice see it.
         scrubbed = self._scrub_reply(result.spoken)
         spoken = self._answer_tool_step(scrubbed, before, language="en" if english else "he")
+        if here is not None:
+            _note_actions(here, result.tool_calls)
+            spoken = self._mesh_claim_check(here, spoken, english)
         # Operator, 2026-10-31: "I need to know when fallback occurs". The code of the
         # fixed text that stood in for the model's answer, shown with the reply.
         self._tls.turn_fallback = _fallback_code(
@@ -4710,7 +4752,8 @@ class DaemonApp:
         conversation :meth:`_hold_conversation` took; the reply carries the
         typed turn's serial so a clip can answer with it.
         """
-        reply = self._run_text_turn_locked(message)
+        with self._presence_busy():
+            reply = self._run_text_turn_locked(message)
         turn = getattr(self._tls, "text_turn", None)
         return _TypedReply(spoken=reply, turn_serial=turn.serial if turn is not None else None)
 
@@ -4741,7 +4784,12 @@ class DaemonApp:
             conversation=conversation,
             persona_id=persona_id,
             persona=persona,
-            target=self._turn_target(session, spoken=False),
+            # an agent's words never route a turn: only the operator's explicit request
+            target=self._turn_target(
+                session,
+                spoken=False,
+                query="" if getattr(self._tls, "mesh_inbound", None) else message,
+            ),
         )
         inbound = getattr(self._tls, "mesh_inbound", None)
         self._mesh_begin(
@@ -5085,7 +5133,7 @@ class DaemonApp:
         )
         stamps_ = [t["ts"] for t in found["turns"] if isinstance(t.get("ts"), (int, float))]
         session.restore(
-            ((t["role"], t["text"]) for t in found["turns"]),
+            ((t["role"], t["text"], t.get("actions") or []) for t in found["turns"]),
             last_turn_at=max(stamps_) if stamps_ else None,
         )
         log_path = getattr(session.transcript, "path", None)
@@ -5349,9 +5397,7 @@ class DaemonApp:
             self._conversation_roles.popitem(last=False)
 
     def _session_role(self, session: Any) -> str:
-        key = self._persona_key(None, session) if session is not None else None
-        with self._lock:
-            chosen = self._conversation_roles.get(key) if key is not None else None
+        chosen = self._chosen_role(session)
         if chosen is not None:
             return chosen
         persona = self._personas.get(self._session_persona_id(session))
@@ -5387,7 +5433,7 @@ class DaemonApp:
             host=getattr(entry, "host", None) or None,
         )
 
-    def _turn_target(self, session: Any, *, spoken: bool) -> _ChatTarget:
+    def _turn_target(self, session: Any, *, spoken: bool, query: str = "") -> _ChatTarget:
         """The role ONE turn asks and its bound, snapshotted when the turn begins.
 
         The configured speaker (senses) keeps the text completion deadline on every
@@ -5397,6 +5443,9 @@ class DaemonApp:
         measurement; otherwise the turn is gated (``gate`` names the state).
         """
         role = self._session_role(session)
+        routed = self._mesh_route(session, role, query, spoken)
+        if routed is not None:
+            role = routed
         entry = self._listed(role)
         deadline = self._config.completion_deadline
         gate: Optional[str] = None
@@ -5419,7 +5468,65 @@ class DaemonApp:
             model=getattr(entry, "model", None) or None,
             host=getattr(entry, "host", None) or None,
             gate=gate,
+            routed="mesh-request" if routed is not None else None,
         )
+
+    def _mesh_route(self, session: Any, role: str, query: str, spoken: bool) -> Optional[str]:
+        """The role an explicit mesh request runs on instead of the default speaker, or
+        ``None`` (operator, 2026-11-01: senses claimed an ask it never made).
+
+        Only when the operator's words ask for a mesh question, the conversation is on the
+        configured speaker by default (no role chosen for it, by the operator or a persona),
+        and the persona may ask. Cortex, else worker, whichever is ready; a spoken turn
+        only takes one whose voice latency is measured (a gated role would be silent)."""
+        lane = self._mesh
+        if lane is None or not lane.config.enabled or not query or role != self._config.role:
+            return None
+        if self._chosen_role(session) is not None:
+            return None
+        _, persona = self._session_persona(session)
+        if persona is not None and not persona.mesh_enabled:
+            return None
+        if not mesh_tools.explicit_mesh_request(query):
+            return None
+        for candidate in MESH_ROUTE_ROLES:
+            entry = self._listed(candidate)
+            if entry is None or not getattr(entry, "ready", False):
+                continue
+            if spoken and self._voice_latency.state(candidate) != voice_latency_module.MEASURED:
+                continue
+            with self._lock:
+                self._mesh_counts["routed_turns"] += 1
+            return candidate
+        self._record(
+            APP_MESH_ROUTE_UNAVAILABLE,
+            "an explicit mesh request stayed on the default speaker: no routed role ready",
+            source="mesh",
+            once=True,
+        )
+        return None
+
+    def _chosen_role(self, session: Any) -> Optional[str]:
+        """The role CHOSEN for *session* (by the operator), or ``None``."""
+        key = self._persona_key(None, session) if session is not None else None
+        with self._lock:
+            return self._conversation_roles.get(key) if key is not None else None
+
+    def _mesh_claim_check(self, turn: Any, spoken: str, english: bool) -> str:
+        """*spoken*, with a fixed correction when it claims a mesh ask this turn never
+        posted (2026-11-01 live run). Never trusts the model: a pattern, not a judge."""
+        if self._mesh is None or turn.mesh_posts or not mesh_tools.claims_mesh_ask(spoken):
+            return spoken
+        with self._lock:
+            self._mesh_counts["claims_unbacked"] += 1
+        self._record(
+            APP_MESH_CLAIM_UNBACKED,
+            "a reply claimed a mesh ask and none was posted; a correction was added",
+            source="mesh",
+        )
+        turn.actions.append("claimed an ask on Culture chat; nothing was sent")
+        correction = mesh_tools.CLAIM_CORRECTION_EN if english else mesh_tools.CLAIM_CORRECTION_HE
+        return f"{spoken}\n\n{correction}"
 
     def _typed_trace(self) -> dict[str, Any]:
         """The running typed turn's role/model/host, for its assistant record."""
@@ -5429,6 +5536,7 @@ class DaemonApp:
         return {
             **self._language_trace(turn.persona_id, turn.persona),
             **_target_trace(turn.target, turn.translation),
+            **_actions_trace(turn),
         }
 
     def _language_trace(self, persona_id: str, persona: Optional[Persona]) -> dict[str, Any]:
@@ -5657,10 +5765,12 @@ class DaemonApp:
             session = self._session
         key = self._persona_key(None, session) if session is not None else None
         with self._lock:
-            role = self._conversation_roles.get(key) if key is not None else None
+            persona = self._conversation_personas.get(key) if key is not None else None
         return {
-            "persona": self._session_persona_id(session),
-            "model": role,  # the CHOSEN role only: _session_role falls back to the persona's
+            # CHOSEN values only (review #2 of #122): a default reported here would come
+            # back as an explicit choice on every chat
+            "persona": persona,
+            "model": self._chosen_role(session),
             "language": self._session_language(session),
         }
 
@@ -7042,6 +7152,10 @@ class DaemonApp:
                 return False
             with self._lock:
                 self._mesh_counts["asks_posted"] += 1
+            here = self._turn_here()
+            if here is not None:
+                here.mesh_posts.append(channel)
+                here.actions.append(f"asked Culture chat on {channel}")
             self._mesh_recent.add(channel, lane.config.nick, text, thread)
             expires = next(
                 (a.get("expires_at") for a in lane.book.all() if a.get("ask_id") == ask_id), None
@@ -9166,6 +9280,9 @@ def _compose_prompt(
             role = str(message.get("role", ""))
             content = str(message.get("content", ""))
             lines.append(f"{role}: {content}")
+            actions = message.get(ACTIONS_FIELD)
+            if actions:  # what that turn DID; absent, the prompt is byte-identical
+                lines.append(WINDOW_ACTIONS_PREFIX + "; ".join(map(str, actions)) + "]")
         parts.append("\n".join(lines))
     if continuation:
         parts.append(continuation)
@@ -9294,6 +9411,24 @@ def _with_original(spec: ToolSpec, pinned: OriginalText) -> ToolSpec:
         finishes=spec.finishes,
         codes=spec.codes,
     )
+
+
+def _note_actions(turn: Any, tool_calls: Iterable[str]) -> None:
+    """Add this completion's tool calls to *turn*'s action labels. ``ask_culture`` is
+    labelled by the poster when it really posted; called without a post, it says so."""
+    for name in tool_calls:
+        if name == mesh_tools.ASK_TOOL:
+            label = "" if turn.mesh_posts else "ask_culture was called; nothing was sent"
+        else:
+            label = f"used {name}"
+        if label and label not in turn.actions:
+            turn.actions.append(label)
+
+
+def _actions_trace(turn: Any) -> dict[str, Any]:
+    """An assistant record's ACTIONS_FIELD (what the turn did), or nothing."""
+    actions = list(getattr(turn, "actions", None) or [])
+    return {ACTIONS_FIELD: actions} if actions else {}
 
 
 def _target_trace(

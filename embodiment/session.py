@@ -232,6 +232,7 @@ from embodiment.memory import DEFAULT_WRITE_DEADLINE, PRIVATE
 from embodiment.turn import is_speakable
 
 __all__ = [
+    "ACTIONS_FIELD",
     "ROLE_USER",
     "ROLE_ASSISTANT",
     "PERSONA_FIELD",
@@ -271,6 +272,14 @@ ROLE_ASSISTANT = "assistant"
 #: The transcript field naming the persona an assistant turn was spoken as. It is
 #: metadata in the log only: never in the window, the budget or a memory record.
 PERSONA_FIELD = "persona"
+#: What an assistant turn actually DID (its tools' outcomes, e.g. "asked Culture chat
+#: on #general"), as short labels the daemon writes. Unlike other metadata it rides
+#: with the turn into the window, so a later turn sees what was done and not only
+#: what was said (the 2026-11-01 live run: Gwen repeated "I sent the question" with no
+#: call behind it). Capped: :data:`MAX_ACTIONS` labels of :data:`MAX_ACTION_CHARS`.
+ACTIONS_FIELD = "actions"
+MAX_ACTIONS = 8
+MAX_ACTION_CHARS = 200
 
 #: Chosen, not measured — a generous conversational window under the chars/4
 #: heuristic (see module docstring). A host tunes this to its own engine.
@@ -592,6 +601,16 @@ class Turn:
 
     role: str
     text: str
+    #: :data:`ACTIONS_FIELD` labels of an assistant turn; empty for most turns.
+    actions: tuple[str, ...] = ()
+
+
+def _actions_of(value: Any) -> tuple[str, ...]:
+    """The usable action labels in *value* (a list of strings), capped; else ``()``."""
+    if not isinstance(value, (list, tuple)):
+        return ()
+    labels = [a[:MAX_ACTION_CHARS] for a in value if isinstance(a, str) and a.strip()]
+    return tuple(labels[:MAX_ACTIONS])
 
 
 @dataclass(frozen=True)
@@ -808,15 +827,23 @@ class Session:
     def closed(self) -> bool:
         return self._closed
 
-    def messages(self) -> list[dict[str, str]]:
+    def messages(self) -> list[dict[str, Any]]:
         """What a turn should see: the current window, oldest first.
 
-        Plain ``{"role": ..., "content": ...}`` dicts — the shape
+        Plain ``{"role": ..., "content": ...}`` dicts, plus :data:`ACTIONS_FIELD` on an
+        assistant turn that did something (its labels, never its text) — the shape
         :func:`embodiment.context.count_tokens_chars` (and this module's own
         default counter) already reads. Text is exactly what was added;
         nothing here is ever rewritten.
         """
-        return [{"role": t.role, "content": t.text} for t in self._turns]
+        return [
+            (
+                {"role": t.role, "content": t.text, ACTIONS_FIELD: list(t.actions)}
+                if t.actions
+                else {"role": t.role, "content": t.text}
+            )
+            for t in self._turns
+        ]
 
     def window_tokens(self) -> int:
         """The current window's estimated token cost.
@@ -924,7 +951,8 @@ class Session:
         self._require_str(text)
         if self.persona_id is not None and PERSONA_FIELD not in (metadata or {}):
             metadata = {**dict(metadata or {}), PERSONA_FIELD: self.persona_id}
-        self._append(ROLE_ASSISTANT, text, metadata=metadata)
+        actions = _actions_of((metadata or {}).get(ACTIONS_FIELD))
+        self._append(ROLE_ASSISTANT, text, metadata=metadata, actions=actions)
 
     @property
     def previous_turn_at(self) -> Optional[float]:
@@ -936,7 +964,7 @@ class Session:
         return self._previous_turn_at
 
     def restore(
-        self, turns: Iterable[tuple[str, str]], *, last_turn_at: Optional[float] = None
+        self, turns: Iterable[tuple[Any, ...]], *, last_turn_at: Optional[float] = None
     ) -> int:
         """Load earlier turns of THIS session into the window; return how many entered.
 
@@ -950,13 +978,16 @@ class Session:
         """
         self._last_turn_at = last_turn_at
         entered = 0
-        for role, text in turns:
+        for entry in turns:
+            # (role, text) or (role, text, actions): a log row's action labels come back too
+            role, text = entry[0], entry[1]
+            actions = _actions_of(entry[2]) if len(entry) > 2 and role == ROLE_ASSISTANT else ()
             if role not in (ROLE_USER, ROLE_ASSISTANT) or not isinstance(text, str):
                 continue
             cost = self._turn_cost(role, text)
             if cost <= 0:
                 continue
-            self._turns.append(Turn(role=role, text=text))
+            self._turns.append(Turn(role=role, text=text, actions=actions))
             self._costs.append(cost)
             self._window_total += cost
             entered += 1
@@ -968,7 +999,13 @@ class Session:
         if not isinstance(text, str):
             raise TypeError(f"turn text must be a str, got {type(text).__name__}")
 
-    def _append(self, role: str, text: str, metadata: Optional[Mapping[str, Any]] = None) -> None:
+    def _append(
+        self,
+        role: str,
+        text: str,
+        metadata: Optional[Mapping[str, Any]] = None,
+        actions: tuple[str, ...] = (),
+    ) -> None:
         self.transcript.write(role, text, **dict(metadata or {}))
         self._previous_turn_at, self._last_turn_at = self._last_turn_at, time.time()
         self._turns_seen += 1
@@ -982,7 +1019,7 @@ class Session:
             # inside one later add_assistant call under the old recompute-
             # the-whole-window-per-pop design).
             return
-        self._turns.append(Turn(role=role, text=text))
+        self._turns.append(Turn(role=role, text=text, actions=actions))
         self._costs.append(cost)
         self._window_total += cost
         self._enforce_budget()

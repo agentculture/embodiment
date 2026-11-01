@@ -67,7 +67,10 @@ The wire, as agentirc answers it (read from ``agentirc/client.py`` and
   (aborted) is retried with the usual backoff. A server that does not advertise
   ``sasl`` records ``mesh-sasl-unavailable`` once and is joined as before (no flag
   day). Without a secret the wire is byte-identical to the unauthenticated one.
-  The secret is never in a record, a status, a ``repr`` or a log.
+  The secret is never in a record, a status, a ``repr`` or a log. One limit of
+  delivery by environment, which is culture's contract: removing it keeps children
+  from inheriting it, but the kernel's copy in ``/proc/<pid>/environ`` keeps the
+  value it started with, readable by processes of the same user.
 
 Clocks, each derived from what it bounds:
 
@@ -488,6 +491,9 @@ class MeshClient:
         self._state = "off" if not config.enabled else "idle"
         self._ledger: deque[MeshDegradation] = deque(maxlen=_LEDGER_MAX)
         self._streak: set[str] = set()
+        #: Codes recorded once per CLIENT: unlike the streak, a reconnect does not clear
+        #: it, so a flapping link cannot refill the bounded ledger (review #2 of #122).
+        self._once: set[str] = set()
         self._counts = {
             "connect_attempts": 0,
             "registrations": 0,
@@ -577,6 +583,14 @@ class MeshClient:
                 if code in self._streak:
                     return
                 self._streak.add(code)
+            self._ledger.append(MeshDegradation(code, reason))
+
+    def _record_once(self, code: str, reason: str = "") -> None:
+        """Record *code* the first time this client sees it, never again."""
+        with self._lock:
+            if code in self._once:
+                return
+            self._once.add(code)
             self._ledger.append(MeshDegradation(code, reason))
 
     def _set_state(self, state: str) -> None:
@@ -981,7 +995,7 @@ class MeshClient:
         self._sasl_phase = ""
         with self._lock:
             self._sasl = "unavailable"
-        self._record("mesh-sasl-unavailable", "the server does not offer sasl", streak=True)
+        self._record_once("mesh-sasl-unavailable", "the server does not offer sasl")
 
     def _on_welcome(self, msg: IrcLine) -> None:
         """001: registered. Counted (a second one is a reconnect); the streak resets."""
@@ -1096,7 +1110,7 @@ class MeshClient:
             "315": (2, lambda: self._on_who_end(msg)),
             "PRIVMSG": (2, lambda: self._deliver(msg)),
             "421": (2, lambda: self._on_unknown_command(msg)),
-            "501": (1, lambda: self._record("mesh-mode-refused", "501", streak=True)),
+            "501": (1, lambda: self._record_once("mesh-mode-refused", "501")),
         }
         entry = handlers.get(command)
         if entry is not None and len(msg.params) >= entry[0]:
@@ -1105,7 +1119,7 @@ class MeshClient:
     def _on_unknown_command(self, msg: IrcLine) -> None:
         if msg.params[1].upper() == "PRESENCE":
             self._presence_unsupported = True  # this connection publishes no more
-            self._record("mesh-presence-unsupported", "421 PRESENCE", streak=True)
+            self._record_once("mesh-presence-unsupported", "421 PRESENCE")
 
     def _on_cap(self, msg: IrcLine) -> None:
         if msg.params[1].upper() == "ACK" and "message-tags" in msg.params[2].split():
@@ -1201,6 +1215,7 @@ class MeshClient:
                     self._presence = ("draining", _utc_now())
                 if not self._presence_unsupported:
                     writer.write((self._presence_line() + "\r\n").encode("utf-8"))
+                    self._count("presence_sent")
                 writer.write(b"QUIT :Gwen is leaving\r\n")
                 await asyncio.wait_for(writer.drain(), timeout=max(0.01, budget / 2))
         except OSError:  # TimeoutError and ConnectionError are OSErrors

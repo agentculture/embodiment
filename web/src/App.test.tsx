@@ -1158,6 +1158,68 @@ describe("App — personas and models (gwen-pm t16)", () => {
   });
 });
 
+describe("App — what a reload restores (review #2 of #122)", () => {
+  const personasBody = {
+    personas: [
+      { id: "gwen", name: "Gwen", language: "he", length: "unset", allow_formatting: false, translate_via: null, mesh_enabled: false, text: "", default_role: "senses" },
+    ],
+    builtin_id: "gwen",
+  };
+  const rolesBody = (conversation: Record<string, unknown>) => ({
+    roles: [{ role: "senses", model: "Gemma", ready: true, host: "spark", voice: "measured", voice_p90_s: 1.1 }],
+    stale: false, age_s: 3, conversation_role: "senses", conversation,
+  });
+  function serve(models: unknown, chats: Record<string, unknown>[]) {
+    globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.endsWith("/api/personas")) return new Response(JSON.stringify(personasBody), { status: 200 });
+      if (u.endsWith("/api/models")) return new Response(JSON.stringify(models), { status: 200 });
+      if (u.endsWith("/api/conversation/new")) return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      if (u.endsWith("/api/chat")) {
+        chats.push(JSON.parse(String(init?.body)));
+        return new Response(JSON.stringify({ reply: "answer", sources: [], turn_serial: 1 }), { status: 200 });
+      }
+      if (u.endsWith("/api/conversations")) return new Response(JSON.stringify({ conversations: [] }), { status: 200 });
+      return new Response(JSON.stringify({ error: { code: "not-found" } }), { status: 404 });
+    }) as typeof fetch;
+  }
+  async function ask(text: string) {
+    fireEvent.change(screen.getByLabelText("message"), { target: { value: text } });
+    await act(async () => {
+      fireEvent.submit(screen.getByRole("form", { name: "composer" }));
+    });
+  }
+
+  it("a restored model lobes no longer serves ready is not sent", async () => {
+    window.location.hash = "";
+    const chats: Record<string, unknown>[] = [];
+    serve(rolesBody({ persona: null, model: "worker", language: "en" }), chats);
+    const source = renderApp(undefined, { drawer: false });
+    act(() => source.open());
+    await screen.findByRole("button", { name: /Language\s+English/ });
+    await ask("hi");
+    await screen.findByText("answer");
+    expect(chats[0]).toMatchObject({ language: "en" });
+    expect(chats[0]).not.toHaveProperty("model");
+    expect(chats[0]).not.toHaveProperty("persona");
+  });
+
+  it("New conversation drops what the reload restored", async () => {
+    window.location.hash = "";
+    const chats: Record<string, unknown>[] = [];
+    serve(rolesBody({ persona: null, model: null, language: "en" }), chats);
+    const source = renderApp(undefined, { drawer: false });
+    act(() => source.open());
+    await screen.findByRole("button", { name: /Language\s+English/ });
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole("button", { name: "New conversation", hidden: true })[0]);
+    });
+    await ask("fresh");
+    await screen.findByText("answer");
+    expect(chats[0]).not.toHaveProperty("language");
+  });
+});
+
 describe("App — mesh cards on a typed-only page (t19 live run)", () => {
   it("an ask and its answer show while the voice transcript is empty, outside the voice section", () => {
     const source = renderApp(undefined, { drawer: false });

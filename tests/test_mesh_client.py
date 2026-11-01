@@ -1178,3 +1178,27 @@ def test_payload_chunking_follows_the_400_rule(length):
         assert pieces[-1] == "+"
     else:
         assert len(pieces[-1]) < 400
+
+
+def test_once_records_stay_once_across_reconnects(ircd, started):
+    client = started(make_config(ircd))
+    for _ in range(3):
+        wait_for(lambda: client.state == "registered")
+        ircd.push(":spark 421 spark-gwen PRESENCE :Unknown command")
+        ircd.push(":spark 501 spark-gwen :Unknown MODE flag")
+        wait_for(lambda: any(d.code == "mesh-mode-refused" for d in client.degradations))
+        before = ircd.connections
+        ircd.drop_all()
+        wait_for(lambda: ircd.connections > before)
+    codes = [d.code for d in client.degradations]
+    assert codes.count("mesh-presence-unsupported") == 1
+    assert codes.count("mesh-mode-refused") == 1
+
+
+def test_the_draining_line_is_counted(ircd, started):
+    client = started(make_config(ircd))
+    wait_for(lambda: client.presence()["sent"] == 1)
+    client.close(2.0)
+    wait_for(lambda: ircd.sent("QUIT"))
+    assert client.presence()["sent"] == 2
+    assert client.presence()["state"] == "draining"

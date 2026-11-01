@@ -363,7 +363,7 @@ class TestAgainstTheDaemon:
     def test_models_report_the_live_conversations_choices_for_a_reload(self, live: Any) -> None:
         h, built = live
         fresh = _send(built, "GET", "/api/models")[1]["conversation"]
-        assert fresh == {"persona": BUILTIN_ID, "model": None, "language": None}
+        assert fresh == {"persona": None, "model": None, "language": None}
         _send(built, "POST", "/api/personas", PERSONA)
         good = {"message": "hi", "persona": "ada", "model": "worker", "language": "en"}
         assert _send(built, "POST", "/api/chat", good)[0] == 200

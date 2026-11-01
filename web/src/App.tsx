@@ -207,6 +207,8 @@ export default function App({
   // A reload restores what the live conversation runs under, once per secret: the first
   // models answer seeds the dock unless the operator has already picked something.
   const seeded = useRef<string | null>(null);
+  // What the reload restored; "New conversation" drops it unless the operator changed it.
+  const restored = useRef<ConversationSettings | null>(null);
   useEffect(() => {
     let live = true;
     const load = () =>
@@ -215,7 +217,12 @@ export default function App({
         setModels(out.info);
         if (seeded.current !== appliedSecret) {
           seeded.current = appliedSecret;
-          setSettings((cur) => (Object.keys(cur).length ? cur : out.info.live));
+          // A restored model must still be served and ready, or every send would be
+          // refused for a choice the operator never made on this page (review #2 of #122).
+          const live = { ...out.info.live };
+          if (live.model && !out.info.roles.some((r) => r.role === live.model && r.ready)) delete live.model;
+          restored.current = live;
+          setSettings((cur) => (Object.keys(cur).length ? cur : live));
         }
       });
     load();
@@ -619,6 +626,9 @@ export default function App({
               onNew={() =>
                 void runControl("new", () => newConversation(appliedSecret)).then((ok) => {
                   if (!ok) return;
+                  const was = restored.current;
+                  restored.current = null;
+                  if (was) setSettings((cur) => (JSON.stringify(cur) === JSON.stringify(was) ? {} : cur));
                   setLiveKey((k) => k + 1);
                   setTranscriptMark(stream.transcript[stream.transcript.length - 1] ?? null);
                   setAnswers([]);
