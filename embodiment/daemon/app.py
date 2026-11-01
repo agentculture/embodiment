@@ -4497,17 +4497,7 @@ class DaemonApp:
         # Before the session, the transcript, the bus or the voice see it.
         scrubbed = self._scrub_reply(result.spoken)
         spoken = self._answer_tool_step(scrubbed, before, language="en" if english else "he")
-        # Only the daemon writes "[done: ...]": a model that copied the format has it removed
-        spoken, forged = mesh_tools.strip_action_records(spoken)
-        if forged:
-            self._record(
-                APP_ACTION_RECORD_FORGED,
-                f"{forged} [done: ...] line(s) in a reply were removed",
-                source="mesh",
-            )
-        if here is not None:
-            _note_actions(here, result.tool_calls)
-            spoken = self._mesh_claim_check(here, spoken, english)
+        spoken = self._reply_checks(here, spoken, english, result.tool_calls)
         # Operator, 2026-10-31: "I need to know when fallback occurs". The code of the
         # fixed text that stood in for the model's answer, shown with the reply.
         self._tls.turn_fallback = _fallback_code(
@@ -4794,12 +4784,7 @@ class DaemonApp:
             conversation=conversation,
             persona_id=persona_id,
             persona=persona,
-            # an agent's words never route a turn: only the operator's explicit request
-            target=self._turn_target(
-                session,
-                spoken=False,
-                query="" if getattr(self._tls, "mesh_inbound", None) else message,
-            ),
+            target=self._turn_target(session, spoken=False, query=self._operator_words(message)),
         )
         inbound = getattr(self._tls, "mesh_inbound", None)
         self._mesh_begin(
@@ -5516,11 +5501,33 @@ class DaemonApp:
         )
         return None
 
+    def _operator_words(self, message: str) -> str:
+        """*message* when the operator wrote it; ``""`` on a turn an agent started (an
+        agent's words never route a turn, only the operator's explicit request)."""
+        return "" if getattr(self._tls, "mesh_inbound", None) else message
+
     def _chosen_role(self, session: Any) -> Optional[str]:
         """The role CHOSEN for *session* (by the operator), or ``None``."""
         key = self._persona_key(None, session) if session is not None else None
         with self._lock:
             return self._conversation_roles.get(key) if key is not None else None
+
+    def _reply_checks(
+        self, turn: Any, spoken: str, english: bool, tool_calls: Iterable[str]
+    ) -> str:
+        """The checks no model is trusted with (2026-11-01): forged ``[done: ...]`` lines go,
+        the turn's real actions are noted, and a claimed ask with no post is corrected."""
+        spoken, forged = mesh_tools.strip_action_records(spoken)
+        if forged:
+            self._record(
+                APP_ACTION_RECORD_FORGED,
+                f"{forged} [done: ...] line(s) in a reply were removed",
+                source="mesh",
+            )
+        if turn is None:
+            return spoken
+        _note_actions(turn, tool_calls)
+        return self._mesh_claim_check(turn, spoken, english)
 
     def _mesh_claim_check(self, turn: Any, spoken: str, english: bool) -> str:
         """*spoken*, with a fixed correction when it claims a mesh ask this turn never
