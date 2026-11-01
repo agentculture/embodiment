@@ -37,3 +37,16 @@ Chrome, after the operator entered the install secret on the page.
   not a verified one.
 - Bolt answered once. Whether the final no-tools step rescues a run that would
   otherwise loop is still unobserved live.
+
+## Second run: the claimed-ask fix (same day, `bfb490c` then `2332441`)
+
+The operator's instruction for this fix: "fix, but don't trust senses - try cortex if
+not bolt", and to do both: route explicit requests off senses, and make the code
+catch a false claim.
+
+| Check | Result |
+|-------|--------|
+| Routing | Two explicit "ask Culture chat…" requests on the default speaker both ran on **cortex** (`chat_routed: mesh-request`). Both asks were really posted, recorded as `asked Culture chat on #general`, and the replies were true (13 s and 11 s). Cortex mangled one word ("בקanal"). |
+| senses chosen explicitly, before the follow-up fix | **Lied again**: "השאלה נשלחה ל־spark-colleague …" ("the question was sent") with no ask posted. It also **forged the record format**, ending its reply with `[done: asked Culture chat on #general]`. The check missed it because the pattern covered "שלחתי" ("I sent") but not the passive. Fixed in `2332441`: `[done: …]` lines are stripped from every reply, and the pattern covers passive forms. The exact reply is a regression test. |
+| senses chosen explicitly, after the fix | Two requests, both really posted (the ask book went from 3 to 5), both recorded, both replies true. The check correctly did not fire. The lie is intermittent and did not recur in these two turns, so the live catch is pinned by the regression test on the text it produced, not by a live repeat. |
+| The final no-tools step's message shape | lobes' senses, cortex and worker each answered a tool-bearing history sent with no tools list: 200, `finish=stop`, in Hebrew. |
